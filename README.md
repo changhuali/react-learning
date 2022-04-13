@@ -55,6 +55,7 @@ function createFiberRoot(...略) {
   // 将rootFiber挂载到fiberRoot的current属性上
   root.current = uninitializedFiber;
   uninitializedFiber.stateNode = root;
+
   return root;
 }
 ```
@@ -65,7 +66,7 @@ const root: FiberRootNode = {
   tag: ConcurrentRoot,
   // container === div#root
   containerInfo: container,
-  // 组件对应的Fiber
+  // 整个组件树的根节点
   current: uninitializedFiber,
 };
 const uninitializedFiber = {
@@ -78,7 +79,7 @@ const uninitializedFiber = {
 }
 ```
 
-`ReactDOMRoot`类有一个`render`实例方法，调用该方法并传入根组件开始渲染
+_`ReactDOMRoot`类有一个`render`实例方法，调用该方法会开始渲染组件树_
 
 ```ts
 root.render(<App />);
@@ -89,4 +90,237 @@ ReactDOMRoot.prototype.render = function (children) {
   var root = this._internalRoot;
   updateContainer(children, root, null, null);
 };
+```
+
+_`updateContainer`_
+
+```ts
+function updateContainer(element, container, parentComponent, callback) {
+  var current$1 = container.current;
+  var eventTime = requestEventTime();
+  var lane = requestUpdateLane(current$1);
+  // 创建Update对象
+  var update = createUpdate(eventTime, lane);
+  update.payload = {
+    element: element,
+  };
+
+  // 将Update对象入队到current Fiber对象的updateQueue队列
+  enqueueUpdate(current$1, update);
+  var root = scheduleUpdateOnFiber(current$1, lane, eventTime);
+
+  return lane;
+}
+```
+
+_`scheduleUpdateOnFiber`_
+
+```ts
+function scheduleUpdateOnFiber(fiber, lane, eventTime) {
+  ensureRootIsScheduled(root, eventTime);
+
+  return root;
+}
+```
+
+_`ensureRootIsScheduled`_
+
+```ts
+function ensureRootIsScheduled(root, currentTime) {
+  // 获取root的优先级
+  var nextLanes = getNextLanes(
+    root,
+    root === workInProgressRoot ? workInProgressRootRenderLanes : NoLanes
+  );
+  var newCallbackPriority = getHighestPriorityLane(nextLanes);
+  // 优先级为SyncLane，进入微任务队列（基于queueMocrotask或Promise）
+  if (newCallbackPriority === SyncLane) {
+    // 将performSyncWorkOnRoot.bind(null, root)回调函数加入到全局syncQueue队列
+    scheduleSyncCallback(performSyncWorkOnRoot.bind(null, root));
+    if (ReactCurrentActQueue$1.current !== null) {
+      // TODO:如何理解 Inside `act`, use our internal `act` queue so that these get flushed
+      // at the end of the current scope even when using the sync version
+      // of `act`.
+      ReactCurrentActQueue$1.current.push(flushSyncCallbacks);
+    } else {
+      scheduleMicrotask(function () {
+        if (executionContext === NoContext) {
+          flushSyncCallbacks();
+        }
+      });
+    }
+  } else {
+    // 优先级低于SyncLane，进入宏任务队列（基于setImmediate或MessageChanel）
+    // scheduleCallback$2会根据当前ReactCurrentActQueue$1.current队列是否为空分别处理该任务
+    // ReactCurrentActQueue$1.current不为空(TODO:何时不为空)：该任务将继续入ReactCurrentActQueue$1.current
+    // ReactCurrentActQueue$1.current为空：该任务将通过Scheduler入堆（该堆是通过根据expirationTime排序的小顶堆）
+    newCallbackNode = scheduleCallback$2(
+      schedulerPriorityLevel,
+      performConcurrentWorkOnRoot.bind(null, root)
+    );
+  }
+}
+```
+
+小结：`ensureRootIsScheduled`会根据更新的优先级生成异步任务，优先级最高的同步任务（`SyncLane`）会以`微任务`的方式执行，其他优先级的任务均会以`宏任务`的方式按照`expirationTime`从小到大的顺序执行
+
+`ensureRootIsScheduled`执行完成后，异步任务开始，此时会执行`performConcurrentWorkOnRoot`
+
+`performConcurrentWorkOnRoot`内部会判断当前是走`并发模式`还是`同步模式`，此时由于是初次渲染，因此会走`同步模式`进而调用`renderRootSync`
+
+`renderRootSync`
+
+```ts
+function renderRootSync(root, lanes) {
+  if (workInProgressRoot !== root || workInProgressRootRenderLanes !== lanes) {
+    // 初始化workInProgressRoot、workInProgress、workInProgressRootRenderLanes等
+    // 一些全局变量，为workLoopSync的执行做准备
+    prepareFreshStack(root, lanes);
+    workLoopSync();
+  }
+}
+```
+
+`workLoopSync`
+
+```ts
+// 开始处理workInProgress Fiber，从rootFiber开始
+function workLoopSync() {
+  while (workInProgress !== null) {
+    performUnitOfWork(workInProgress);
+  }
+}
+```
+
+`performUnitOfWork`
+
+```ts
+function performUnitOfWork(unitOfWork) {
+  next = beginWork$1(current, unitOfWork, subtreeRenderLanes);
+  if (next === null) {
+    completeUnitOfWork(unitOfWork);
+  } else {
+    workInProgress = next;
+  }
+}
+```
+
+`beginWork`
+
+```ts
+function beginWork(current, workInProgress, renderLanes) {
+  if (current !== null) {
+    var oldProps = current.memoizedProps;
+    var newProps = workInProgress.pendingProps;
+
+    if (
+      oldProps !== newProps ||
+      hasContextChanged() || // Force a re-render if the implementation changed due to hot reload:
+      workInProgress.type !== current.type
+    ) {
+      didReceiveUpdate = true;
+    } else {
+      var hasScheduledUpdateOrContext = checkScheduledUpdateOrContext(
+        current,
+        renderLanes
+      );
+
+      if (
+        !hasScheduledUpdateOrContext &&
+        (workInProgress.flags & DidCapture) === NoFlags
+      ) {
+        didReceiveUpdate = false;
+        return attemptEarlyBailoutIfNoScheduledUpdate(
+          current,
+          workInProgress,
+          renderLanes
+        );
+      }
+
+      if ((current.flags & ForceUpdateForLegacySuspense) !== NoFlags) {
+        didReceiveUpdate = true;
+      } else {
+        didReceiveUpdate = false;
+      }
+    }
+  } else {
+    didReceiveUpdate = false;
+
+    if (getIsHydrating() && isForkedChild(workInProgress)) {
+      var slotIndex = workInProgress.index;
+      var numberOfForks = getForksAtLevel();
+      pushTreeId(workInProgress, numberOfForks, slotIndex);
+    }
+  }
+
+  workInProgress.lanes = NoLanes;
+
+  switch (workInProgress.tag) {
+    case IndeterminateComponent: {
+    }
+
+    case LazyComponent: {
+    }
+
+    case FunctionComponent: {
+    }
+
+    case ClassComponent: {
+    }
+
+    case HostRoot:
+      return updateHostRoot(current, workInProgress, renderLanes);
+
+    case HostComponent:
+      return updateHostComponent$1(current, workInProgress, renderLanes);
+
+    case HostText:
+      return updateHostText$1(current, workInProgress);
+
+    case SuspenseComponent:
+      return updateSuspenseComponent(current, workInProgress, renderLanes);
+
+    case HostPortal:
+      return updatePortalComponent(current, workInProgress, renderLanes);
+
+    case ForwardRef: {
+    }
+
+    case Fragment:
+
+    case Mode:
+
+    case Profiler:
+
+    case ContextProvider:
+
+    case ContextConsumer:
+
+    case MemoComponent: {
+    }
+
+    case SimpleMemoComponent: {
+    }
+
+    case IncompleteClassComponent: {
+    }
+
+    case SuspenseListComponent: {
+    }
+
+    case ScopeComponent: {
+      break;
+    }
+
+    case OffscreenComponent: {
+    }
+
+    case LegacyHiddenComponent: {
+      break;
+    }
+
+    case CacheComponent: {
+    }
+  }
+}
 ```
