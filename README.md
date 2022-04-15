@@ -337,7 +337,7 @@ function updateHostRoot(current, workInProgress, renderLanes) {
   // 创建workInProgress Fiber的子节点
   reconcileChildren(current, workInProgress, nextChildren, renderLanes);
 
-  // 返回创建好的子节点
+  // 返回创建好的子节点，执行栈回到performUnitOfWork的时候会将它赋值给workInProgress，当执行栈回到workLoopSync时会处理该节点
   return workInProgress.child;
 }
 ```
@@ -520,7 +520,8 @@ function processUpdateQueue(workInProgress, props, instance, renderLanes) {
       // `queue.lanes` is used for entangling transitions. We can set it back to
       // zero once the queue is empty.
       queue.shared.lanes = NoLanes;
-    } // Set the remaining expiration time to be whatever is remaining in the queue.
+    }
+    // Set the remaining expiration time to be whatever is remaining in the queue.
     // This should be fine because the only two other things that contribute to
     // expiration time are props and context. We're already in the middle of the
     // begin phase by the time we start processing the queue, so we've already
@@ -535,5 +536,432 @@ function processUpdateQueue(workInProgress, props, instance, renderLanes) {
     // 将计算的最终状态结果存储到memoizedState
     workInProgress.memoizedState = newState;
   }
+}
+```
+
+`reconcileChildren`
+
+```ts
+function reconcileChildren(current, workInProgress, nextChildren, renderLanes) {
+  if (current === null) {
+    // 加载阶段
+    workInProgress.child = mountChildFibers(
+      workInProgress,
+      null,
+      nextChildren,
+      renderLanes
+    );
+  } else {
+    // 更新阶段
+    workInProgress.child = reconcileChildFibers(
+      workInProgress,
+      current.child,
+      nextChildren,
+      renderLanes
+    );
+  }
+}
+```
+
+`mountChildFibers`和`reconcileChildFibers`都是都是通过执行工厂函数返回的`reconcileChildFibers`函数
+
+`reconcileChildFibers`
+
+```ts
+function reconcileChildFibers(returnFiber, currentFirstChild, newChild, lanes) {
+  // newChild是否为Fragment且不含key
+  var isUnkeyedTopLevelFragment =
+    typeof newChild === "object" &&
+    newChild !== null &&
+    newChild.type === REACT_FRAGMENT_TYPE &&
+    newChild.key === null;
+  // 由下面可以看出，不带key的Fragment元素会直接取其children进行处理，其不会生成对应的Fiber
+  if (isUnkeyedTopLevelFragment) {
+    newChild = newChild.props.children;
+  }
+
+  // 根据newChild.$$typeof判断该如何处理该节点
+  if (typeof newChild === "object" && newChild !== null) {
+    switch (newChild.$$typeof) {
+      // 自定义组件/原生组件，如<Custom />、<div />
+      case REACT_ELEMENT_TYPE:
+        // placeSingleChild函数会为执行reconcileSingleElement函数返回的Fiber打上Placement标记
+        return placeSingleChild(
+          reconcileSingleElement(
+            returnFiber,
+            currentFirstChild,
+            newChild,
+            lanes
+          )
+        );
+      // ReactDOM.createPortal创建的元素
+      case REACT_PORTAL_TYPE:
+        return placeSingleChild(
+          // 和reconcileSingleElement类似，只不过创建的是tag为HostPortal的Fiber
+          reconcileSinglePortal(returnFiber, currentFirstChild, newChild, lanes)
+        );
+      // React.lazy创建的元素
+      case REACT_LAZY_TYPE: {
+        var payload = newChild._payload;
+        var init = newChild._init; // 可能发生递归爆栈
+        return reconcileChildFibers(
+          returnFiber,
+          currentFirstChild,
+          init(payload),
+          lanes
+        );
+      }
+    }
+    if (isArray(newChild)) {
+      return reconcileChildrenArray(
+        returnFiber,
+        currentFirstChild,
+        newChild,
+        lanes
+      );
+    }
+    if (getIteratorFn(newChild)) {
+      return reconcileChildrenIterator(
+        returnFiber,
+        currentFirstChild,
+        newChild,
+        lanes
+      );
+    }
+    throwOnInvalidObjectType(returnFiber, newChild);
+  }
+}
+```
+
+`reconcileSingleElement`
+
+```ts
+function reconcileSingleElement(
+  returnFiber,
+  currentFirstChild,
+  element,
+  lanes
+) {
+  var key = element.key;
+  var child = currentFirstChild;
+
+  // child !== null表示执行更新，开始单节点diff
+  // 删除操作: 在returnFiber.flags上面打上ChildDeletion标记，并将child保存到returnFiber.deletions数组中
+  // key不同: 对child执行删除操作，继续比较child的兄弟节点
+  // key相同且type相同: 复用child，并对child的所有兄弟Fiber执行删除操作
+  // key相同且type不同: 对child及其所有兄弟Fiber执行删除操作
+  // Fiber复用是如何实现的: 调用 createWorkInProgress(current, element.props)，其内部会new一个新的Fiber，
+  // 然后将current的属性copy到新的Fiber上，并重置index为0，重置sibling为null，重置return为returnFiber，
+  // 若能复用Fiber，则会返回创建的Fiber，若不能复用则会根据element、mode、lanes创建一个全新的Fiber并返回该Fiber
+  // 无论是复用还是不复用，Fiber都会被打上StaticMask标记。
+  while (child !== null) {
+    if (child.key === key) {
+      var elementType = element.type;
+
+      if (elementType === REACT_FRAGMENT_TYPE) {
+        if (child.tag === Fragment) {
+          deleteRemainingChildren(returnFiber, child.sibling);
+          var existing = useFiber(child, element.props.children);
+          existing.return = returnFiber;
+
+          {
+            existing._debugSource = element._source;
+            existing._debugOwner = element._owner;
+          }
+
+          return existing;
+        }
+      } else {
+        if (
+          child.elementType === elementType || // Keep this check inline so it only runs on the false path:
+          isCompatibleFamilyForHotReloading(child, element) || // Lazy types should reconcile their resolved type.
+          // We need to do this after the Hot Reloading check above,
+          // because hot reloading has different semantics than prod because
+          // it doesn't resuspend. So we can't let the call below suspend.
+          (typeof elementType === "object" &&
+            elementType !== null &&
+            elementType.$$typeof === REACT_LAZY_TYPE &&
+            resolveLazy(elementType) === child.type)
+        ) {
+          deleteRemainingChildren(returnFiber, child.sibling);
+
+          var _existing = useFiber(child, element.props);
+
+          _existing.ref = coerceRef(returnFiber, child, element);
+          _existing.return = returnFiber;
+
+          {
+            _existing._debugSource = element._source;
+            _existing._debugOwner = element._owner;
+          }
+
+          return _existing;
+        }
+      } // Didn't match.
+
+      deleteRemainingChildren(returnFiber, child);
+      break;
+    } else {
+      deleteChild(returnFiber, child);
+    }
+
+    child = child.sibling;
+  }
+
+  if (element.type === REACT_FRAGMENT_TYPE) {
+    var created = createFiberFromFragment(
+      element.props.children,
+      returnFiber.mode,
+      lanes,
+      element.key
+    );
+    created.return = returnFiber;
+    return created;
+  } else {
+    // 会根据element.type创建Fiber
+    // 用Fiber的elementType属性保存element.type
+    // element.type类型为typeof type === function || (typeof type === object && type !== null && type.$$typeof === REACT_FORWARD_REF_TYPE)时，回调用对应的resolveXXX函数解析type值TODO:尚未找到使用场景
+    // 用Fiber的tag属性表示节点类型，有下列类型
+    // Fragment
+    // IndeterminateComponent
+    // ClassComponent
+    // HostComponent
+    // Mode
+    // Profiler
+    // SuspenseComponent
+    // SuspenseListComponent
+    // OffscreenComponent
+    // CacheComponent
+    // ContextProvider
+    // ContextConsumer
+    // ForwardRef
+    // MemoComponent
+    // LazyComponent
+    var _created4 = createFiberFromElement(element, returnFiber.mode, lanes);
+
+    _created4.ref = coerceRef(returnFiber, currentFirstChild, element);
+    _created4.return = returnFiber;
+    return _created4;
+  }
+}
+```
+
+`reconcileChildrenArray`
+
+```ts
+function reconcileChildrenArray(
+  returnFiber,
+  currentFirstChild,
+  newChildren,
+  lanes
+) {
+  {
+    var knownKeys = null;
+
+    for (var i = 0; i < newChildren.length; i++) {
+      var child = newChildren[i];
+      knownKeys = warnOnInvalidKey(child, knownKeys, returnFiber);
+    }
+  }
+
+  // first newFiber
+  var resultingFirstChild = null;
+  // last newFiber
+  var previousNewFiber = null;
+  // 遍历结束后其值为第一个key不相同时的oldFiber
+  var oldFiber = currentFirstChild;
+  var lastPlacedIndex = 0;
+  // 遍历结束后其值为第一个key不同时的child index
+  var newIdx = 0;
+  var nextOldFiber = null;
+
+  // 遍历newChildren
+  for (; oldFiber !== null && newIdx < newChildren.length; newIdx++) {
+    // TODO:条件什么情况会为true，一般来说oldFiber.index === 0
+    if (oldFiber.index > newIdx) {
+      nextOldFiber = oldFiber;
+      oldFiber = null;
+    } else {
+      nextOldFiber = oldFiber.sibling;
+    }
+
+    // 内部会比较key, key和type都相同, 会返回复用的Fiber, 若key相同, type不同, 会返回新建的Fiber, 否则返回null
+    var newFiber = updateSlot(
+      returnFiber,
+      oldFiber,
+      newChildren[newIdx],
+      lanes
+    );
+
+    // key不同会跳出循环
+    if (newFiber === null) {
+      // TODO: This breaks on empty slots like null children. That's
+      // unfortunate because it triggers the slow path all the time. We need
+      // a better way to communicate whether this was a miss or null,
+      // boolean, undefined, etc.
+      if (oldFiber === null) {
+        oldFiber = nextOldFiber;
+      }
+
+      break;
+    }
+
+    // update: key相同但type不同导致未复用成功，执行删除操作（同单节点diff的删除操作）
+    if (shouldTrackSideEffects) {
+      if (oldFiber && newFiber.alternate === null) {
+        // We matched the slot, but we didn't reuse the existing fiber, so we
+        // need to delete the existing child.
+        deleteChild(returnFiber, oldFiber);
+      }
+    }
+
+    // 将Fiber的index属性值设为newIdx
+    // mount:
+    //  为新的Fiber节点打上Forked标记
+    //  返回lastPlacedIndex
+    // update:
+    //  复用成功:
+    //    复用的Fiber会被打上StaticMask标记
+    //    被复用的Fiber并不会被打上Placement标记, 因为此时, oldIndex肯定不满足小于lastPlacedIndex的条件
+    //    返回oldIndex
+    //  复用失败:
+    //    为新的Fiber节点打上Placement标记
+    //    返回lastPlacedIndex
+    lastPlacedIndex = placeChild(newFiber, lastPlacedIndex, newIdx);
+
+    if (previousNewFiber === null) {
+      // TODO: Move out of the loop. This only happens for the first run.
+      resultingFirstChild = newFiber;
+    } else {
+      // TODO: Defer siblings if we're not at the right index for this slot.
+      // I.e. if we had null values before, then we want to defer this
+      // for each null value. However, we also don't want to call updateSlot
+      // with the previous one.
+      previousNewFiber.sibling = newFiber;
+    }
+
+    previousNewFiber = newFiber;
+    oldFiber = nextOldFiber;
+  }
+
+  // 说明newChildren节点被全部处理, 此时剩下的old fibers全部是需要被删除的节点
+  if (newIdx === newChildren.length) {
+    // We've reached the end of the new children. We can delete the rest.
+    deleteRemainingChildren(returnFiber, oldFiber);
+
+    if (getIsHydrating()) {
+      var numberOfForks = newIdx;
+      pushTreeFork(returnFiber, numberOfForks);
+    }
+
+    return resultingFirstChild;
+  }
+
+  // oldFiber遍历完毕, 此时剩下的newChildren全是新增节点, 需要为其创建各自的全新Fiber
+  if (oldFiber === null) {
+    // If we don't have any more existing children we can choose a fast path
+    // since the rest will all be insertions.
+    for (; newIdx < newChildren.length; newIdx++) {
+      var _newFiber = createChild(returnFiber, newChildren[newIdx], lanes);
+
+      if (_newFiber === null) {
+        continue;
+      }
+
+      // 一定复用失败, 因此只是为Fiber打上Placement标签
+      lastPlacedIndex = placeChild(_newFiber, lastPlacedIndex, newIdx);
+
+      if (previousNewFiber === null) {
+        // TODO: Move out of the loop. This only happens for the first run.
+        resultingFirstChild = _newFiber;
+      } else {
+        // 将新的节点挂载到previousNewFiber.sibling，以为previousNewFiber是resultingFirstChild的一个后继节点
+        // 所以最终返回的resultingFirstChild链表包含了newChildren对应的所有Fiber
+        previousNewFiber.sibling = _newFiber;
+      }
+
+      previousNewFiber = _newFiber;
+    }
+
+    if (getIsHydrating()) {
+      var _numberOfForks = newIdx;
+      pushTreeFork(returnFiber, _numberOfForks);
+    }
+
+    return resultingFirstChild;
+  }
+
+  // Add all children to a key map for quick lookups.
+  // 将剩下的old fibers以key为key，oldFiber为value的形式存储到一个Map中，便于快速查找
+  var existingChildren = mapRemainingChildren(returnFiber, oldFiber);
+
+  // Keep scanning and use the map to restore deleted items as moves.
+  // 循环遍历剩下的newChildren, 在Map中能找到对应key的Fiber, 则说明顺序发生变化，
+  // 会根据type是否相同走Fiber的复用或者新建逻辑, 然后将其在Map中删除, 这样Map
+  // 若在newChildren遍历完还剩old fibers, 则说明这些fibers需要删除
+  for (; newIdx < newChildren.length; newIdx++) {
+    var _newFiber2 = updateFromMap(
+      existingChildren,
+      returnFiber,
+      newIdx,
+      newChildren[newIdx],
+      lanes
+    );
+
+    if (_newFiber2 !== null) {
+      if (shouldTrackSideEffects) {
+        // 复用成功的节点会从Map中删除,
+        if (_newFiber2.alternate !== null) {
+          // The new fiber is a work in progress, but if there exists a
+          // current, that means that we reused the fiber. We need to delete
+          // it from the child list so that we don't add it to the deletion
+          // list.
+          existingChildren.delete(
+            _newFiber2.key === null ? newIdx : _newFiber2.key
+          );
+        }
+      }
+
+      // 复用失败:
+      //  为节点打上Placement标签
+      //  返回lastPlacedIndex (即lastPlacedIndex不会发生变化)
+      // 复用成功:
+      //  如果该被复用的Fiber的相对顺序同原相对顺序不一致, 则打上Placement标签, 这里的相对顺序是指该节点
+      //  和所有其他节点的前后顺序, 比如节点1、2、3、4, 我们说节点2在节点1的后面, 在节点3、节点4的前面，
+      //    假设: 4个节点分别为1234, 其key也分别为1234
+      //    例1: 如果更新后顺序为4123, 第一位4默认不算移动, 123原来在4的前面, 现在都跑到4的后面去了,
+      //         则认为123都发生了移动, 都会打上Placement标签。
+      //    例2: 如果更新后顺序为2314, 第一位2默认不算移动, 3相对2来说是满足原来顺序的,
+      //         1相对2和3来说则认为发生了右移, 4相对于231来说都没发生变化。
+      //    例3: 如果更新后顺序为2143, 第一位2默认不算移动, 1相对2来说则认为发生了右移, 4相对21来说
+      //         没发生变化, 3相对21来说没发生变化, 但是其相对4来说发生了右移。
+      // 注意: 复用的Fiber会被打上StaticMask标记
+      lastPlacedIndex = placeChild(_newFiber2, lastPlacedIndex, newIdx);
+
+      if (previousNewFiber === null) {
+        resultingFirstChild = _newFiber2;
+      } else {
+        previousNewFiber.sibling = _newFiber2;
+      }
+
+      previousNewFiber = _newFiber2;
+    }
+  }
+
+  // Map中最终剩下的节点表示不在newChildren中, 需要标记Deletion
+  if (shouldTrackSideEffects) {
+    // Any existing children that weren't consumed above were deleted. We need
+    // to add them to the deletion list.
+    existingChildren.forEach(function (child) {
+      return deleteChild(returnFiber, child);
+    });
+  }
+
+  if (getIsHydrating()) {
+    var _numberOfForks2 = newIdx;
+    pushTreeFork(returnFiber, _numberOfForks2);
+  }
+
+  return resultingFirstChild;
 }
 ```

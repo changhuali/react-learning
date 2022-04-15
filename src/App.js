@@ -1,46 +1,39 @@
 import "./App.css";
-import { useEffect, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
-function C1() {
-  useEffect(() => {
-    console.log("mount C1");
-    return () => {
-      console.log("unmount C1");
-    };
-  }, []);
-  return <C2 />;
-}
-
-function C2() {
-  useEffect(() => {
-    console.log("mount C2");
-    return () => {
-      console.log("unmount C2");
-    };
-  }, []);
-  return null;
+function Expensive() {
+  const list = [...new Array(10)];
+  console.log("expensive render", list.length);
+  return (
+    <div>
+      {list.map((item, index) => {
+        return <p key={index}>{index}</p>;
+      })}
+    </div>
+  );
 }
 
 function App() {
   const [count, setCount] = useState(0);
+  const ref = useRef();
 
-  useEffect(() => {
-    console.log("mount App");
-    return () => {
-      console.log("unmount App");
-    };
+  const expensiveChild = useMemo(() => {
+    return <Expensive ref={ref} />;
   }, []);
 
   return (
-    <div>
-      {count % 2 === 0 ? <C1 /> : null}
+    <div ref={ref}>
+      {count}
       <button
         onClick={() => {
-          setCount((count) => ++count);
+          setCount((count) => {
+            return ++count;
+          });
         }}
       >
-        {count}
+        点我试一试
       </button>
+      <Expensive />
     </div>
   );
 }
