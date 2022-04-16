@@ -198,7 +198,9 @@ function workLoopSync() {
 function performUnitOfWork(unitOfWork) {
   var current = unitOfWork.alternate;
   next = beginWork$1(current, unitOfWork, subtreeRenderLanes);
+  // 说明unitOfWork.child已处理完毕
   if (next === null) {
+    // 内部会判断unitOfWork.sibling, 如果不为null, 会将其赋值给workInProgress, 并退出该函数
     completeUnitOfWork(unitOfWork);
   } else {
     workInProgress = next;
@@ -222,14 +224,14 @@ function beginWork(current, workInProgress, renderLanes) {
     ) {
       didReceiveUpdate = true;
     } else {
-      // In case: oldProps === newProps && !hasContextChanged() && workInProgress.type === current.type
+      // 优化点：props相等且type相等则直接复用`Fiber`
+      // 等价 var hasScheduledUpdateOrContext = includesSomeLane(current.lanes, renderLanes)
+      // TODO: 不明白
       var hasScheduledUpdateOrContext = checkScheduledUpdateOrContext(
         current,
         renderLanes
       );
 
-      // TODO:何时触发》？
-      // 优化点：直接复用子`Fiber`
       if (
         !hasScheduledUpdateOrContext &&
         (workInProgress.flags & DidCapture) === NoFlags
@@ -963,5 +965,215 @@ function reconcileChildrenArray(
   }
 
   return resultingFirstChild;
+}
+```
+
+`completeUnitOfWork`
+
+```ts
+function completeUnitOfWork(unitOfWork) {
+  var completedWork = unitOfWork;
+  do {
+    var current = completedWork.alternate;
+    var returnFiber = completedWork.return;
+    // 判断completedWork是否含有Incomplete标记
+    // 有Incomplete标记, 说明抛出异常了, 会进入异常处理流程 (先忽略)
+    if ((completedWork.flags & Incomplete) === NoFlags) {
+      // TODO: 做了啥
+      next = completeWork(current, completedWork, subtreeRenderLanes);
+      if (next !== null) {
+        // Completing this fiber spawned new work. Work on that next.
+        workInProgress = next;
+        return;
+      }
+    } else {
+      // 异常处理
+      // TODO: ErrorBoundary在此处捕获异常？
+    }
+
+    // 执行到此处说明当前节点还有兄弟节点未执行performUnitOfWork, 所以退出继续执行performUnitOfWork.
+    // 如果当前节点是父节点的最后一个子节点, 则在下次循环时如果继续执行到这里, 那么
+    // workInProgress变为了returnFiber, 相当于继续处理父节点的兄弟节点.
+    // 由此可以看出, performUnitOfWork是按 DFS 顺序处理Fiber节点的.
+    var siblingFiber = completedWork.sibling;
+    if (siblingFiber !== null) {
+      workInProgress = siblingFiber;
+      return;
+    }
+
+    // Otherwise, return to the parent
+    // 执行到此处说明父节点的最后一个子节点已经执行完performUnitOfWork了, 下一步需要完成父节点的completeWork.
+    completedWork = returnFiber;
+    workInProgress = completedWork;
+  } while (completedWork !== null);
+
+  if (workInProgressRootExitStatus === RootInProgress) {
+    workInProgressRootExitStatus = RootCompleted;
+  }
+}
+```
+
+`completeWork`
+
+```ts
+function completeWork(current, workInProgress, renderLanes) {
+  var newProps = workInProgress.pendingProps;
+  // Note: This intentionally doesn't check if we're hydrating because comparing
+  // to the current tree provider fiber is just as fast and less error-prone.
+  // Ideally we would have a special version of the work loop only
+  // for hydration.
+  popTreeContext(workInProgress);
+  
+  switch (workInProgress.tag) {
+    case IndeterminateComponent:
+    case LazyComponent:
+    case SimpleMemoComponent:
+    case FunctionComponent:
+    case ForwardRef:
+    case Fragment:
+    case Mode:
+    case Profiler:
+    case ContextConsumer:
+    case MemoComponent:
+      bubbleProperties(workInProgress);
+      return null;
+    case ClassComponent:
+    // 先略过
+    case HostRoot:
+    // 先略过
+    case HostComponent: {
+      popHostContext(workInProgress);
+      var rootContainerInstance = getRootHostContainer();
+      var type = workInProgress.type;
+
+      // update阶段且复用了Fiber
+      if (current !== null && workInProgress.stateNode != null) {
+        // 内部为执行diffProperties比较新props(nextProps)旧props(lastProps)
+        // 新旧props比较算法:
+        //  遍历lastProps
+        //    1. 忽略存在于nextProps或值为null的属性, 
+        //    2. 如果key为style, 遍历lastStyle的所有属性并将每个属性的值设置为''然后保存到styleUpdates上, styleUpdates默认为null
+        //    3. 如果key为dangerouslySetInnerHTML、children、suppressContentEditableWarning、suppressHydrationWarning、autoFocus则不做处理
+        //    4. 如果key为registrationNameDependencies(TODO: 事件相关)中的一个key, 如果updatePayload为空, 将其设置为[]
+        //    5. 将key, null为一个pair push到updatePayload
+        //    所以遍历结束后, 不存在nextProps的属性会被以key, null pair的形式存放到updatePayload中
+        //  遍历nextProps
+        //    1. 忽略nextProp === lastProp或nextProp == null && lastProp == null的属性(注意这里比较是用的==, 因此, 当属性在null和undefined之间变换时，不会触发节点更新)
+        //    2. 如果key为style, 且存在lastStyle, 遍历lastStyle, 对于存在lastStyle但不存在nextStyle的样式属性执行styleUpdates[styleName] = '', 遍历nextStyle, 对于存在nextStyle但不存在lastStyle的样式属性执行styleUpdates[styleName] = nextProp[styleName];
+        //    3. 如果key为style, 且不存在lastStyle, 将style, styleUpdates(此时为null) pair push到updatePayload中并执行styleUpdates = nextStyle
+        //    4. 如果key为dangerouslySetInnerHTML, 如果dangerouslySetInnerHTML.__html不为空, 且和last dangerouslySetInnerHTML.__html不想等, 则将dangerouslySetInnerHTML, dangerouslySetInnerHTML.__html pair push到updatePayload中
+        //    5. 如果key为children, 并且其值为字符串或数字, 则将children, '' + children pair push到updatePayload中
+        //    6. 如果key为suppressContentEditableWarning、suppressHydrationWarning则不做处理
+        //    7. 如果key为registrationNameDependencies(TODO: 事件相关)中的一个key, 如果值!= null, 如果类型不是function, 报警告, 
+        //          如果key为onScroll, 调用listenToNonDelegatedEvent('scroll', domElement)TODO: 为什么要单独处理
+        //    8. key为其他值, 将key, value pair push到updatePayload中
+        //  如果styleUpdates不为null, 则将style, styleUpdates pair push到updatePayload中
+        //  返回updatePayload, updateHostComponent内会判断updatePayload是否为空, 如果不为空则将其挂载到workInProgress.updateQueue上并会给workInProgress.flags打上Update标记
+        updateHostComponent(
+          current,
+          workInProgress,
+          type,
+          newProps,
+          rootContainerInstance
+        );
+
+        if (current.ref !== workInProgress.ref) {
+          markRef(workInProgress);
+        }
+      } else {
+        if (!newProps) {
+          if (workInProgress.stateNode === null) {
+            throw new Error(
+              "We must have new props for new mounts. This error is likely " +
+                "caused by a bug in React. Please file an issue."
+            );
+          }
+          
+          // This can happen when we abort work.
+          // TODO: 为什么newProps为null就只执行bubbleProperties
+          bubbleProperties(workInProgress);
+          return null;
+        }
+
+        var currentHostContext = getHostContext();
+        
+        // TODO: Move createInstance to beginWork and keep it on a context
+        // "stack" as the parent. Then append children as we go in beginWork
+        // or completeWork depending on whether we want to add them top->down or
+        // bottom->up. Top->down is faster in IE11.
+        var _wasHydrated = popHydrationState(workInProgress);
+
+        if (_wasHydrated) {
+          // TODO: Move this and createInstance step into the beginPhase
+          // to consolidate.
+          if (
+            prepareToHydrateHostInstance(
+              workInProgress,
+              rootContainerInstance,
+              currentHostContext
+            )
+          ) {
+            // If changes to the hydrated node need to be applied at the
+            // commit-phase we mark this as such.
+            markUpdate(workInProgress);
+          }
+        } else {
+          // mount阶段, 创建DOM
+          var instance = createInstance(
+            type,
+            newProps,
+            rootContainerInstance,
+            currentHostContext,
+            workInProgress
+          );
+          appendAllChildren(instance, workInProgress, false, false);
+          workInProgress.stateNode = instance;
+          
+          // Certain renderers require commit-time effects for initial mount.
+          // (eg DOM renderer supports auto-focus for certain elements).
+          // Make sure such renderers get scheduled for later work.
+          if (
+            finalizeInitialChildren(
+              instance,
+              type,
+              newProps,
+              rootContainerInstance
+            )
+          ) {
+            markUpdate(workInProgress);
+          }
+        }
+
+        if (workInProgress.ref !== null) {
+          // If there is a ref on a host node we need to schedule a callback
+          markRef(workInProgress);
+        }
+      }
+
+      bubbleProperties(workInProgress);
+      return null;
+    }
+    case HostText:
+    // 先略过
+    case SuspenseComponent:
+    // 先略过
+    case HostPortal:
+    // 先略过
+    case ContextProvider:
+    // 先略过
+    case IncompleteClassComponent:
+    // 先略过
+    case SuspenseListComponent:
+    // 先略过
+    case ScopeComponent:
+    // 先略过
+    case OffscreenComponent:
+    case LegacyHiddenComponent:
+    // 先略过
+    case CacheComponent:
+    // 先略过
+    case TracingMarkerComponent:
+    // 先略过
+  }
 }
 ```
