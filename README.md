@@ -92,7 +92,7 @@ ReactDOMRoot.prototype.render = function (children) {
 };
 ```
 
-_`updateContainer`_
+### _`updateContainer`_
 
 ```ts
 function updateContainer(element, container, parentComponent, callback) {
@@ -113,7 +113,7 @@ function updateContainer(element, container, parentComponent, callback) {
 }
 ```
 
-_`scheduleUpdateOnFiber`_
+### `scheduleUpdateOnFiber`
 
 ```ts
 function scheduleUpdateOnFiber(fiber, lane, eventTime) {
@@ -123,7 +123,7 @@ function scheduleUpdateOnFiber(fiber, lane, eventTime) {
 }
 ```
 
-_`ensureRootIsScheduled`_
+### _`ensureRootIsScheduled`_
 
 ```ts
 function ensureRootIsScheduled(root, currentTime) {
@@ -162,11 +162,11 @@ function ensureRootIsScheduled(root, currentTime) {
 }
 ```
 
-小结：`ensureRootIsScheduled`会根据更新的优先级生成异步任务，优先级最高的同步任务（`SyncLane`）会以`微任务`的方式执行，其他优先级的任务均会以`宏任务`的方式按照`expirationTime`从小到大的顺序执行
+小结: `ensureRootIsScheduled`会根据更新的优先级生成异步任务，优先级最高的同步任务（`SyncLane`）会以`微任务`的方式执行，其他优先级的任务均会以`宏任务`的方式按照`expirationTime`从小到大的顺序执行
 
 `ensureRootIsScheduled`执行完成后，异步任务开始，此时会执行`performConcurrentWorkOnRoot`
 
-`performConcurrentWorkOnRoot`内部会判断当前是走`并发模式`还是`同步模式`，此时由于是初次渲染，因此会走`同步模式`进而调用`renderRootSync`
+`performConcurrentWorkOnRoot`内部会判断当前是走`并发模式`还是`同步模式`，初次渲染会走`同步模式`进而调用`renderRootSync`
 
 `renderRootSync`
 
@@ -482,6 +482,7 @@ function processUpdateQueue(workInProgress, props, instance, renderLanes) {
         if (pendingQueue === null) {
           break;
         } else {
+          // TODO: 什么情况下会发生
           // An update was scheduled from inside a reducer（TODO:哪种情况）. Add the new
           // pending updates to the end of the list and keep processing.
           var _lastPendingUpdate = pendingQueue; // Intentionally unsound. Pending updates form a circular list, but we
@@ -533,7 +534,7 @@ function processUpdateQueue(workInProgress, props, instance, renderLanes) {
 
     // 标记workInProgress Fiber有哪些优先级的update被跳过
     markSkippedUpdateLanes(newLanes);
-    // workInProgress Fiber还未处理完成的优先级集合
+    // workInProgress Fiber还未处理完成的优先级集合, TODO:有什么作用
     workInProgress.lanes = newLanes;
     // 将计算的最终状态结果存储到memoizedState
     workInProgress.memoizedState = newState;
@@ -979,7 +980,6 @@ function completeUnitOfWork(unitOfWork) {
     // 判断completedWork是否含有Incomplete标记
     // 有Incomplete标记, 说明抛出异常了, 会进入异常处理流程 (先忽略)
     if ((completedWork.flags & Incomplete) === NoFlags) {
-      // TODO: 做了啥
       next = completeWork(current, completedWork, subtreeRenderLanes);
       if (next !== null) {
         // Completing this fiber spawned new work. Work on that next.
@@ -1303,3 +1303,32 @@ function bubbleProperties(completedWork) {
   return didBailout;
 }
 ```
+
+小结:
+
+1. 异步任务开始执行
+2. 初次渲染`lanes`为`DefaultLane`, 所以会走`renderRootSync`
+3. `renderRootSync`执行的是`workLoopSync`, `workLoopSync`会对`workInProgress Fiber`(初始为 root.current)执行`performUnitOfWork`, 直到`workInProgress`为`null`, 并且这个过程不可中断
+4. `performUnitOfWork`
+   `beginWork`
+   `beginWork`是一个 DFS 过程
+
+   1. 通过一系列判断设置全局变量`didReceiveUpdate`的值, 这个只用来标识当前`Fiber`是否需要更新, 后续操作可以通过判断`didReceiveUpdate`的值做优化处理
+   2. 调用`cloneUpdateQueue`, 将`current.updateQueue`copy 到`workInProgress.updateQueue`
+   3. 调用`processUpdateQueue`, 生成最新的`updateQueue.memoizedState`、`updateQueue.baseState`、`updateQueue.effects`(不为空还会给节点打上`Callback`标记)、`workInProgress.lanes`
+   4. 通过第 3 步生成的`updateQueue.memoizedState.element`(TODO: 为什么不是取 baseState.element?)拿到`nextChildren`, 然后调用`reconcileChildren`为`workInProgress`生成`child`
+   5. `reconcileChildren`里面通过`current`是否为空判断当前是`mount`阶段还是`update`阶段, 如果是`mount`阶段, 则为`workInProgress.child`创建新`Fiber`, 如果是`update`阶段, 则会根据`diff算法`决定为`workInProgress.child`复用`旧Fiber`还是创建`新Fiber`
+      `diff算法`分为`单节点diff`和`多节点diff`
+
+   `completeUnitOfWork`
+
+   `completeUnitOfWork`是一个回溯过程
+
+   1. 为当前节点执行`completeWork`
+      `mount`阶段`HostComponent`会创建 DOM, 并插入子节点
+      `update`阶段`HostComponent`会`diff properties`, 如果发现属性变更, 会为节点打上`Update`标签（优化操作: 如果 oldProps === newProps 直接跳过 diff）
+      执行`bubbleProperties`将所有子节点的`flags`和`subtreeFlags`归并到当前节点的`subtreeFlags`, 将所有子节点的`lanes`和`childLanes`归并到`childLanes`上面
+   2. 判断当前节点是否还有兄弟节点, 如果有则将`workInProgress`设置为当前节点的兄弟节点, 跳出当前函数
+   3. 如果没有兄弟节点, 将当前节点设为`returnFiber`再执行第一步
+
+
