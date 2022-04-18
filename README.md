@@ -1013,6 +1013,8 @@ function completeUnitOfWork(unitOfWork) {
 }
 ```
 
+可以看出只有叶子节点会执行`completeUnitOfWork`, 非叶子节点是在其最后一个子节点执行完`completeWork`后再回溯(通过 while 实现)执行的`completeWork`
+
 `completeWork`
 
 ```ts
@@ -1023,7 +1025,7 @@ function completeWork(current, workInProgress, renderLanes) {
   // Ideally we would have a special version of the work loop only
   // for hydration.
   popTreeContext(workInProgress);
-  
+
   switch (workInProgress.tag) {
     case IndeterminateComponent:
     case LazyComponent:
@@ -1035,6 +1037,7 @@ function completeWork(current, workInProgress, renderLanes) {
     case Profiler:
     case ContextConsumer:
     case MemoComponent:
+      // 计算workInProgress的childLanes和subtreeFlags
       bubbleProperties(workInProgress);
       return null;
     case ClassComponent:
@@ -1051,7 +1054,7 @@ function completeWork(current, workInProgress, renderLanes) {
         // 内部为执行diffProperties比较新props(nextProps)旧props(lastProps)
         // 新旧props比较算法:
         //  遍历lastProps
-        //    1. 忽略存在于nextProps或值为null的属性, 
+        //    1. 忽略存在于nextProps或值为null的属性,
         //    2. 如果key为style, 遍历lastStyle的所有属性并将每个属性的值设置为''然后保存到styleUpdates上, styleUpdates默认为null
         //    3. 如果key为dangerouslySetInnerHTML、children、suppressContentEditableWarning、suppressHydrationWarning、autoFocus则不做处理
         //    4. 如果key为registrationNameDependencies(TODO: 事件相关)中的一个key, 如果updatePayload为空, 将其设置为[]
@@ -1064,7 +1067,7 @@ function completeWork(current, workInProgress, renderLanes) {
         //    4. 如果key为dangerouslySetInnerHTML, 如果dangerouslySetInnerHTML.__html不为空, 且和last dangerouslySetInnerHTML.__html不想等, 则将dangerouslySetInnerHTML, dangerouslySetInnerHTML.__html pair push到updatePayload中
         //    5. 如果key为children, 并且其值为字符串或数字, 则将children, '' + children pair push到updatePayload中
         //    6. 如果key为suppressContentEditableWarning、suppressHydrationWarning则不做处理
-        //    7. 如果key为registrationNameDependencies(TODO: 事件相关)中的一个key, 如果值!= null, 如果类型不是function, 报警告, 
+        //    7. 如果key为registrationNameDependencies(TODO: 事件相关)中的一个key, 如果值!= null, 如果类型不是function, 报警告,
         //          如果key为onScroll, 调用listenToNonDelegatedEvent('scroll', domElement)TODO: 为什么要单独处理
         //    8. key为其他值, 将key, value pair push到updatePayload中
         //  如果styleUpdates不为null, 则将style, styleUpdates pair push到updatePayload中
@@ -1081,6 +1084,7 @@ function completeWork(current, workInProgress, renderLanes) {
           markRef(workInProgress);
         }
       } else {
+        // TODO: 为什么newProps为null就只执行bubbleProperties
         if (!newProps) {
           if (workInProgress.stateNode === null) {
             throw new Error(
@@ -1088,15 +1092,14 @@ function completeWork(current, workInProgress, renderLanes) {
                 "caused by a bug in React. Please file an issue."
             );
           }
-          
+
           // This can happen when we abort work.
-          // TODO: 为什么newProps为null就只执行bubbleProperties
           bubbleProperties(workInProgress);
           return null;
         }
 
         var currentHostContext = getHostContext();
-        
+
         // TODO: Move createInstance to beginWork and keep it on a context
         // "stack" as the parent. Then append children as we go in beginWork
         // or completeWork depending on whether we want to add them top->down or
@@ -1126,9 +1129,10 @@ function completeWork(current, workInProgress, renderLanes) {
             currentHostContext,
             workInProgress
           );
+          // 将所有子DOM节点挂载到instance
           appendAllChildren(instance, workInProgress, false, false);
           workInProgress.stateNode = instance;
-          
+
           // Certain renderers require commit-time effects for initial mount.
           // (eg DOM renderer supports auto-focus for certain elements).
           // Make sure such renderers get scheduled for later work.
@@ -1175,5 +1179,127 @@ function completeWork(current, workInProgress, renderLanes) {
     case TracingMarkerComponent:
     // 先略过
   }
+}
+```
+
+`bubbleProperties`
+
+```ts
+function bubbleProperties(completedWork) {
+  // didBailout为true表示completedWork是复用的current Fiber
+  var didBailout =
+    completedWork.alternate !== null &&
+    completedWork.alternate.child === completedWork.child;
+  var newChildLanes = NoLanes;
+  var subtreeFlags = NoFlags;
+
+  // 未复用
+  if (!didBailout) {
+    // Bubble up the earliest expiration time.
+    // ProfileMode先跳过
+    if ((completedWork.mode & ProfileMode) !== NoMode) {
+      // In profiling mode, resetChildExpirationTime is also used to reset
+      // profiler durations.
+      var actualDuration = completedWork.actualDuration;
+      var treeBaseDuration = completedWork.selfBaseDuration;
+      var child = completedWork.child;
+
+      while (child !== null) {
+        newChildLanes = mergeLanes(
+          newChildLanes,
+          mergeLanes(child.lanes, child.childLanes)
+        );
+        subtreeFlags |= child.subtreeFlags;
+        subtreeFlags |= child.flags;
+        // When a fiber is cloned, its actualDuration is reset to 0. This value will
+        // only be updated if work is done on the fiber (i.e. it doesn't bailout).
+        // When work is done, it should bubble to the parent's actualDuration. If
+        // the fiber has not been cloned though, (meaning no work was done), then
+        // this value will reflect the amount of time spent working on a previous
+        // render. In that case it should not bubble. We determine whether it was
+        // cloned by comparing the child pointer.
+
+        actualDuration += child.actualDuration;
+        treeBaseDuration += child.treeBaseDuration;
+        child = child.sibling;
+      }
+
+      completedWork.actualDuration = actualDuration;
+      completedWork.treeBaseDuration = treeBaseDuration;
+    } else {
+      var _child = completedWork.child;
+
+      // 将所有子孙节点的lanes合并, 作为当前节点的childLanes
+      // 将所有子孙节点的flags合并, 作为当前节点的subtreeFlags
+      while (_child !== null) {
+        newChildLanes = mergeLanes(
+          newChildLanes,
+          mergeLanes(_child.lanes, _child.childLanes)
+        );
+        subtreeFlags |= _child.subtreeFlags;
+        subtreeFlags |= _child.flags;
+
+        // Update the return pointer so the tree is consistent. This is a code
+        // smell because it assumes the commit phase is never concurrent with
+        // the render phase. Will address during refactor to alternate model.
+        _child.return = completedWork;
+        _child = _child.sibling;
+      }
+    }
+
+    completedWork.subtreeFlags |= subtreeFlags;
+  } else {
+    // Bubble up the earliest expiration time.
+    if ((completedWork.mode & ProfileMode) !== NoMode) {
+      // In profiling mode, resetChildExpirationTime is also used to reset
+      // profiler durations.
+      var _treeBaseDuration = completedWork.selfBaseDuration;
+      var _child2 = completedWork.child;
+
+      while (_child2 !== null) {
+        newChildLanes = mergeLanes(
+          newChildLanes,
+          mergeLanes(_child2.lanes, _child2.childLanes)
+        );
+        // "Static" flags share the lifetime of the fiber/hook they belong to,
+        // so we should bubble those up even during a bailout. All the other
+        // flags have a lifetime only of a single render + commit, so we should
+        // ignore them.
+        subtreeFlags |= _child2.subtreeFlags & StaticMask; // 和未复用相比多了StaticMask
+        subtreeFlags |= _child2.flags & StaticMask; // 和未复用相比多了StaticMask
+        _treeBaseDuration += _child2.treeBaseDuration;
+        _child2 = _child2.sibling;
+      }
+
+      completedWork.treeBaseDuration = _treeBaseDuration;
+    } else {
+      var _child3 = completedWork.child;
+
+      while (_child3 !== null) {
+        newChildLanes = mergeLanes(
+          newChildLanes,
+          mergeLanes(_child3.lanes, _child3.childLanes)
+        );
+        // "Static" flags share the lifetime of the fiber/hook they belong to,
+        // so we should bubble those up even during a bailout. All the other
+        // flags have a lifetime only of a single render + commit, so we should
+        // ignore them.
+
+        subtreeFlags |= _child3.subtreeFlags & StaticMask;
+        subtreeFlags |= _child3.flags & StaticMask;
+
+        // Update the return pointer so the tree is consistent. This is a code
+        // smell because it assumes the commit phase is never concurrent with
+        // the render phase. Will address during refactor to alternate model.
+        _child3.return = completedWork;
+        _child3 = _child3.sibling;
+      }
+    }
+
+    completedWork.subtreeFlags |= subtreeFlags;
+  }
+
+  completedWork.childLanes = newChildLanes;
+  return didBailout;
 }
 ```
