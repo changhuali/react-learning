@@ -1,4 +1,4 @@
-## Fiber 架构
+# Fiber 架构
 
 - 背景
   老的架构中，多个渲染任务没有优先级的概念，使得部分紧急的渲染任务可能会被其他不那么紧急的渲染任务阻塞，从而导致用户交互卡顿。
@@ -15,19 +15,19 @@
   `React`中，一个"渲染入口"最多同时存在两个`Fiber`树，已经渲染到屏幕中的内容对应的`Fiber`树称为`current Fiber`树，引发更新时，`React`会在内存中重新构建一棵新的`Fiber`树，称为`workInProgress Fiber`树。
   每个`Fiber`节点有一个`alternate`属性，用于保存其对应的`current Fiber`或`workInProgress Fiber`
 
-下面我们通过分析`React`的`render阶段`和`commit阶段`来见识下`Fiber`在`React`中到底是如何工作的。
+下面我们通过分析`React`的`render阶段`和`commit阶段`来看看`Fiber`在`React`中到底是如何工作的。
 
-## render 阶段
+# render 阶段
 
-_调用`createRoot`创建一个`ReactDOMRoot`实例_
+## createRoot
 
 ```ts
-function createRoot() {
-  // 创建fiberRoot，fiberRoot是整个应用的根节点
+function createRoot(container, options) {
+  // 创建fiberRoot, fiberRoot是整个应用的根节点, 其内部是调用的createFiberRoot
   var root = createContainer(
-    container,
-    ConcurrentRoot,
-    null,
+    container, // containerInfo
+    ConcurrentRoot, // tag, 默认为并发模式
+    null, // hydrationCallbacks
     isStrictMode,
     concurrentUpdatesByDefaultOverride,
     identifierPrefix,
@@ -38,10 +38,21 @@ function createRoot() {
 }
 ```
 
-_`createContainer`会调用`createFiberRoot`创建并返回一个`FiberRootNode`实例_
+### createFiberRoot
 
 ```ts
-function createFiberRoot(...略) {
+function createFiberRoot(
+  containerInfo,
+  tag,
+  hydrate, // 默认false
+  initialChildren, // 默认null
+  hydrationCallbacks,
+  isStrictMode,
+  concurrentUpdatesByDefaultOverride,
+  identifierPrefix,
+  onRecoverableError,
+  transitionCallbacks // 内部并没用到该参数
+) {
   // 创建fiberRoot
   var root = new FiberRootNode(
     containerInfo,
@@ -50,9 +61,9 @@ function createFiberRoot(...略) {
     identifierPrefix,
     onRecoverableError
   );
-  // 创建rootFiber，rootFiber是整个组件树的根节点
+  // 创建rootFiber, rootFiber是整个组件树的根节点
   var uninitializedFiber = createHostRootFiber(tag, isStrictMode);
-  // 将rootFiber挂载到fiberRoot的current属性上
+  // 下面两行代码指定了root.current是container所对应的Fiber节点
   root.current = uninitializedFiber;
   uninitializedFiber.stateNode = root;
 
@@ -60,30 +71,35 @@ function createFiberRoot(...略) {
 }
 ```
 
+- fiberRoot
+
 ```ts
-const root: FiberRootNode = {
-  // ConcurrentRoot === 1 表示开启并发模式
+{
+  // 节点类型
   tag: ConcurrentRoot,
-  // container === div#root
+  // 容器信息
   containerInfo: container,
-  // 整个组件树的根节点
+  // 组件树根节点
   current: uninitializedFiber,
+  // ...
 };
-const uninitializedFiber = {
-  // Fiber节点对应的是一个原生节点，其值为3
+```
+
+- rootFiber
+
+```ts
+{
+  // 节点的类型
   tag: HostRoot,
-  // 渲染模式为并发渲染
+  // 渲染模式
   mode: ConcurrentRoot
-  // Fiber节点对应的dom信息
+  // 节点对应的DOM信息
   stateNode: root
+  // ...
 }
 ```
 
-_`ReactDOMRoot`类有一个`render`实例方法，调用该方法会开始渲染组件树_
-
-```ts
-root.render(<App />);
-```
+## ReactDomRoot.prototype.render
 
 ```ts
 ReactDOMRoot.prototype.render = function (children) {
@@ -92,12 +108,14 @@ ReactDOMRoot.prototype.render = function (children) {
 };
 ```
 
-### _`updateContainer`_
+## updateContainer
 
 ```ts
 function updateContainer(element, container, parentComponent, callback) {
   var current$1 = container.current;
+  // 记录当前时间(一个很精确的值)
   var eventTime = requestEventTime();
+  // 根据上下文返回一个lane, 通过render触发时会返回DefaultLane
   var lane = requestUpdateLane(current$1);
   // 创建Update对象
   var update = createUpdate(eventTime, lane);
@@ -107,33 +125,46 @@ function updateContainer(element, container, parentComponent, callback) {
 
   // 将Update对象入队到current Fiber对象的updateQueue队列
   enqueueUpdate(current$1, update);
+  // 开始调度任务
   var root = scheduleUpdateOnFiber(current$1, lane, eventTime);
+  // TODO:
+  if (root !== null) {
+    entangleTransitions(root, current$1, lane);
+  }
 
   return lane;
 }
 ```
 
-### `scheduleUpdateOnFiber`
+## scheduleUpdateOnFiber
 
 ```ts
 function scheduleUpdateOnFiber(fiber, lane, eventTime) {
+  // 将当前lane合并到fiber.lanes和fiber的所有祖先节点的childLanes上面
+  var root = markUpdateLaneFromFiberToRoot(fiber, lane);
+  // 将lane合并到root.pendingLanes
+  markRootUpdated(root, lane, eventTime);
+  // 处理调度
   ensureRootIsScheduled(root, eventTime);
 
+  // 返回fiberRoot
   return root;
 }
 ```
 
-### _`ensureRootIsScheduled`_
+## ensureRootIsScheduled
 
 ```ts
 function ensureRootIsScheduled(root, currentTime) {
-  // 获取root的优先级
+  // 遍历root.pendingLanes, 将已过期的lane合并到root.expiredLanes
+  markStarvedLanesAsExpired(root, currentTime);
+  // 获取接下来要处理的lanes
   var nextLanes = getNextLanes(
     root,
     root === workInProgressRoot ? workInProgressRootRenderLanes : NoLanes
   );
   var newCallbackPriority = getHighestPriorityLane(nextLanes);
-  // 优先级为SyncLane，进入微任务队列（基于queueMocrotask或Promise）
+  // 优先级为SyncLane，进入微任务队列（基于queueMicrotask或Promise）
   if (newCallbackPriority === SyncLane) {
     // 将performSyncWorkOnRoot.bind(null, root)回调函数加入到全局syncQueue队列
     scheduleSyncCallback(performSyncWorkOnRoot.bind(null, root));
@@ -152,13 +183,15 @@ function ensureRootIsScheduled(root, currentTime) {
   } else {
     // 优先级低于SyncLane，进入宏任务队列（基于setImmediate或MessageChanel）
     // scheduleCallback$2会根据当前ReactCurrentActQueue$1.current队列是否为空分别处理该任务
-    // ReactCurrentActQueue$1.current不为空(TODO:何时不为空)：该任务将继续入ReactCurrentActQueue$1.current
-    // ReactCurrentActQueue$1.current为空：该任务将通过Scheduler入堆（该堆是通过根据expirationTime排序的小顶堆）
+    // 不为空(TODO:何时不为空): 该任务将继续入队到ReactCurrentActQueue$1.current
+    // 为空：该任务将通过Scheduler入堆 (该堆是通过根据expirationTime排序的小顶堆)
     newCallbackNode = scheduleCallback$2(
       schedulerPriorityLevel,
       performConcurrentWorkOnRoot.bind(null, root)
     );
   }
+  root.callbackPriority = newCallbackPriority;
+  root.callbackNode = newCallbackNode;
 }
 ```
 
@@ -166,9 +199,11 @@ function ensureRootIsScheduled(root, currentTime) {
 
 `ensureRootIsScheduled`执行完成后，异步任务开始，此时会执行`performConcurrentWorkOnRoot`
 
+## performConcurrentWorkOnRoot
+
 `performConcurrentWorkOnRoot`内部会判断当前是走`并发模式`还是`同步模式`，初次渲染会走`同步模式`进而调用`renderRootSync`
 
-`renderRootSync`
+### renderRootSync
 
 ```ts
 function renderRootSync(root, lanes) {
@@ -181,7 +216,7 @@ function renderRootSync(root, lanes) {
 }
 ```
 
-`workLoopSync`
+### workLoopSync
 
 ```ts
 // 开始处理workInProgress Fiber，从rootFiber开始
@@ -192,7 +227,7 @@ function workLoopSync() {
 }
 ```
 
-`performUnitOfWork`
+#### performUnitOfWork
 
 ```ts
 function performUnitOfWork(unitOfWork) {
@@ -208,7 +243,7 @@ function performUnitOfWork(unitOfWork) {
 }
 ```
 
-`beginWork`
+##### beginWork
 
 ```ts
 function beginWork(current, workInProgress, renderLanes) {
@@ -318,7 +353,7 @@ function beginWork(current, workInProgress, renderLanes) {
 }
 ```
 
-`updateHostRoot`
+###### updateHostRoot
 
 ```ts
 function updateHostRoot(current, workInProgress, renderLanes) {
@@ -344,7 +379,7 @@ function updateHostRoot(current, workInProgress, renderLanes) {
 }
 ```
 
-`processUpdateQueue`
+###### processUpdateQueue
 
 ```ts
 function processUpdateQueue(workInProgress, props, instance, renderLanes) {
@@ -542,7 +577,7 @@ function processUpdateQueue(workInProgress, props, instance, renderLanes) {
 }
 ```
 
-`reconcileChildren`
+###### reconcileChildren
 
 ```ts
 function reconcileChildren(current, workInProgress, nextChildren, renderLanes) {
@@ -636,7 +671,7 @@ function reconcileChildFibers(returnFiber, currentFirstChild, newChild, lanes) {
 }
 ```
 
-`reconcileSingleElement`
+###### reconcileSingleElement
 
 ```ts
 function reconcileSingleElement(
@@ -749,7 +784,7 @@ function reconcileSingleElement(
 }
 ```
 
-`reconcileChildrenArray`
+###### reconcileChildrenArray
 
 ```ts
 function reconcileChildrenArray(
@@ -969,7 +1004,7 @@ function reconcileChildrenArray(
 }
 ```
 
-`completeUnitOfWork`
+##### completeUnitOfWork
 
 ```ts
 function completeUnitOfWork(unitOfWork) {
@@ -1015,7 +1050,7 @@ function completeUnitOfWork(unitOfWork) {
 
 可以看出只有叶子节点会执行`completeUnitOfWork`, 非叶子节点是在其最后一个子节点执行完`completeWork`后再回溯(通过 while 实现)执行的`completeWork`
 
-`completeWork`
+###### `completeWork`
 
 ```ts
 function completeWork(current, workInProgress, renderLanes) {
@@ -1182,7 +1217,7 @@ function completeWork(current, workInProgress, renderLanes) {
 }
 ```
 
-`bubbleProperties`
+###### `bubbleProperties`
 
 ```ts
 function bubbleProperties(completedWork) {
@@ -1330,5 +1365,3 @@ function bubbleProperties(completedWork) {
       执行`bubbleProperties`将所有子节点的`flags`和`subtreeFlags`归并到当前节点的`subtreeFlags`, 将所有子节点的`lanes`和`childLanes`归并到`childLanes`上面
    2. 判断当前节点是否还有兄弟节点, 如果有则将`workInProgress`设置为当前节点的兄弟节点, 跳出当前函数
    3. 如果没有兄弟节点, 将当前节点设为`returnFiber`再执行第一步
-
-
