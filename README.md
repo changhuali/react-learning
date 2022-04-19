@@ -261,7 +261,7 @@ function beginWork(current, workInProgress, renderLanes) {
     } else {
       // 优化点：props相等且type相等则直接复用`Fiber`
       // 等价 var hasScheduledUpdateOrContext = includesSomeLane(current.lanes, renderLanes)
-      // TODO: 不明白
+      // TODO:
       var hasScheduledUpdateOrContext = checkScheduledUpdateOrContext(
         current,
         renderLanes
@@ -298,57 +298,57 @@ function beginWork(current, workInProgress, renderLanes) {
 
   workInProgress.lanes = NoLanes;
 
+  // 根据tag（表示节点类型）的值创建各自对应的Fiber, 下面分析常见的tag
   switch (workInProgress.tag) {
-    // 根据tag（表示节点类型）的值创建各自对应的Fiber
+    // function组件在mount阶段
     case IndeterminateComponent:
-
-    case LazyComponent:
-
+      return mountIndeterminateComponent(
+        current,
+        workInProgress,
+        workInProgress.type,
+        renderLanes
+      );
+    // function组件在update阶段
     case FunctionComponent:
-
+      var Component = workInProgress.type;
+      var unresolvedProps = workInProgress.pendingProps;
+      var resolvedProps =
+        workInProgress.elementType === Component
+          ? unresolvedProps
+          : resolveDefaultProps(Component, unresolvedProps);
+      return updateFunctionComponent(
+        current,
+        workInProgress,
+        Component,
+        resolvedProps,
+        renderLanes
+      );
+    // class组件
     case ClassComponent:
+      var _Component = workInProgress.type;
+      var _unresolvedProps = workInProgress.pendingProps;
+      var _resolvedProps =
+        workInProgress.elementType === _Component
+          ? _unresolvedProps
+          : resolveDefaultProps(_Component, _unresolvedProps);
 
+      return updateClassComponent(
+        current,
+        workInProgress,
+        _Component,
+        _resolvedProps,
+        renderLanes
+      );
+    // rootFiber
     case HostRoot:
       return updateHostRoot(current, workInProgress, renderLanes);
+    // 浏览器组件
     case HostComponent:
-
+      return updateHostComponent$1(current, workInProgress, renderLanes);
+    // 文本
     case HostText:
-
-    case SuspenseComponent:
-
-    case HostPortal:
-
-    case ForwardRef:
-
-    case Fragment:
-
-    case Mode:
-
-    case Profiler:
-
-    case ContextProvider:
-
-    case ContextConsumer:
-
-    case MemoComponent:
-
-    case SimpleMemoComponent:
-
-    case IncompleteClassComponent:
-
-    case SuspenseListComponent:
-
-    case ScopeComponent: {
-      break;
-    }
-
-    case OffscreenComponent:
-
-    case LegacyHiddenComponent: {
-      break;
-    }
-
-    case CacheComponent:
+      return updateHostText$1(current, workInProgress);
+    // ...
   }
 }
 ```
@@ -1004,6 +1004,426 @@ function reconcileChildrenArray(
 }
 ```
 
+###### mountIndeterminateComponent
+
+```ts
+function mountIndeterminateComponent(
+  _current,
+  workInProgress,
+  Component,
+  renderLanes
+) {
+  var props = workInProgress.pendingProps;
+  var context;
+
+  {
+    var unmaskedContext = getUnmaskedContext(workInProgress, Component, false);
+    context = getMaskedContext(workInProgress, unmaskedContext);
+  }
+  // 为element._owner设置为workInProgress
+  ReactCurrentOwner$1.current = workInProgress;
+
+  // 执行函数式组件, 并且在其执行前会初始化好执行环境
+  var value = renderWithHooks(
+    null,
+    workInProgress,
+    Component,
+    props,
+    context,
+    renderLanes
+  );
+
+  reconcileChildren(null, workInProgress, value, renderLanes);
+
+  return workInProgress.child;
+}
+```
+
+###### renderWithHooks
+
+```ts
+function renderWithHooks(
+  current,
+  workInProgress,
+  Component,
+  props,
+  secondArg,
+  nextRenderLanes
+) {
+  renderLanes = nextRenderLanes;
+  // 更新全局变量
+  currentlyRenderingFiber$1 = workInProgress;
+
+  // 先跳过
+  {
+    hookTypesDev = current !== null ? current._debugHookTypes : null;
+    hookTypesUpdateIndexDev = -1; // Used for hot reloading:
+
+    ignorePreviousDependencies =
+      current !== null && current.type !== workInProgress.type;
+  }
+
+  workInProgress.memoizedState = null;
+  workInProgress.updateQueue = null;
+  workInProgress.lanes = NoLanes;
+  // The following should have already been reset
+  // currentHook = null;
+  // workInProgressHook = null;
+  // didScheduleRenderPhaseUpdate = false;
+  // localIdCounter = 0;
+  // TODO Warn if no hooks are used at all during mount, then some are used during update.
+  // Currently we will identify the update render as a mount because memoizedState === null.
+  // This is tricky because it's valid for certain types of components (e.g. React.lazy)
+  // Using memoizedState to differentiate between mount/update only works if at least one stateful hook is used.
+  // Non-stateful hooks (e.g. context) don't get added to memoizedState,
+  // so memoizedState would be null during updates and mounts.
+
+  // React包导出的hooks其实只是一些代理函数
+  // 在组件mount时, 这些代理函数执行的是HooksDispatcherOnMountInDEV上面对应的函数
+  // 在组件update时, 执行的是HooksDispatcherOnUpdateInDEV上面对应的函数
+  {
+    if (current !== null && current.memoizedState !== null) {
+      // 将所有的hooks切换到update形态
+      ReactCurrentDispatcher$1.current = HooksDispatcherOnUpdateInDEV;
+    } else if (hookTypesDev !== null) {
+      // This dispatcher handles an edge case where a component is updating,
+      // but no stateful hooks have been used.
+      // We want to match the production code behavior (which will use HooksDispatcherOnMount),
+      // but with the extra DEV validation to ensure hooks ordering hasn't changed.
+      // This dispatcher does that.
+      ReactCurrentDispatcher$1.current =
+        HooksDispatcherOnMountWithHookTypesInDEV;
+    } else {
+      // 将所有的hooks切换到mount形态
+      ReactCurrentDispatcher$1.current = HooksDispatcherOnMountInDEV;
+    }
+  }
+
+  // 执行函数组件, secondArg为ref
+  // 开始执行用户的代码, 此时如果组件内有使用hooks, 这些hooks将在此时调用, 具体见下面hooks的分析
+  var children = Component(props, secondArg);
+
+  // Check if there was a render phase update
+  if (didScheduleRenderPhaseUpdateDuringThisPass) {
+    // Keep rendering in a loop for as long as render phase updates continue to
+    // be scheduled. Use a counter to prevent infinite loops.
+    var numberOfReRenders = 0;
+
+    do {
+      didScheduleRenderPhaseUpdateDuringThisPass = false;
+      localIdCounter = 0;
+
+      if (numberOfReRenders >= RE_RENDER_LIMIT) {
+        throw new Error(
+          "Too many re-renders. React limits the number of renders to prevent " +
+            "an infinite loop."
+        );
+      }
+
+      numberOfReRenders += 1;
+
+      {
+        // Even when hot reloading, allow dependencies to stabilize
+        // after first render to prevent infinite render phase updates.
+        ignorePreviousDependencies = false;
+      } // Start over from the beginning of the list
+
+      currentHook = null;
+      workInProgressHook = null;
+      workInProgress.updateQueue = null;
+
+      {
+        // Also validate hook order for cascading updates.
+        hookTypesUpdateIndexDev = -1;
+      }
+
+      ReactCurrentDispatcher$1.current = HooksDispatcherOnRerenderInDEV;
+      children = Component(props, secondArg);
+    } while (didScheduleRenderPhaseUpdateDuringThisPass);
+  } // We can assume the previous dispatcher is always this one, since we set it
+  // at the beginning of the render phase and there's no re-entrance.
+
+  ReactCurrentDispatcher$1.current = ContextOnlyDispatcher;
+
+  {
+    workInProgress._debugHookTypes = hookTypesDev;
+  } // This check uses currentHook so that it works the same in DEV and prod bundles.
+  // hookTypesDev could catch more cases (e.g. context) but only in DEV bundles.
+
+  var didRenderTooFewHooks = currentHook !== null && currentHook.next !== null;
+  renderLanes = NoLanes;
+  currentlyRenderingFiber$1 = null;
+  currentHook = null;
+  workInProgressHook = null;
+
+  {
+    currentHookNameInDev = null;
+    hookTypesDev = null;
+    hookTypesUpdateIndexDev = -1; // Confirm that a static flag was not added or removed since the last
+    // render. If this fires, it suggests that we incorrectly reset the static
+    // flags in some other part of the codebase. This has happened before, for
+    // example, in the SuspenseList implementation.
+
+    if (
+      current !== null &&
+      (current.flags & StaticMask) !== (workInProgress.flags & StaticMask) && // Disable this warning in legacy mode, because legacy Suspense is weird
+      // and creates false positives. To make this work in legacy mode, we'd
+      // need to mark fibers that commit in an incomplete state, somehow. For
+      // now I'll disable the warning that most of the bugs that would trigger
+      // it are either exclusive to concurrent mode or exist in both.
+      (current.mode & ConcurrentMode) !== NoMode
+    ) {
+      error(
+        "Internal React error: Expected static flag was missing. Please " +
+          "notify the React team."
+      );
+    }
+  }
+
+  didScheduleRenderPhaseUpdate = false; // This is reset by checkDidRenderIdHook
+  // localIdCounter = 0;
+
+  if (didRenderTooFewHooks) {
+    throw new Error(
+      "Rendered fewer hooks than expected. This may be caused by an accidental " +
+        "early return statement."
+    );
+  }
+
+  return children;
+}
+```
+
+## hooks
+
+- HooksDispatcherOnMountInDEV
+
+```ts
+var HooksDispatcherOnMountInDEV = {
+  useState: function (initialState) {
+    currentHookNameInDev = "useState";
+    mountHookTypesDev();
+    var prevDispatcher = ReactCurrentDispatcher$1.current;
+    // 将hooks切换到warning形态, 如果在这此hook调用期间调用了其他内置hook, 则会报警告
+    ReactCurrentDispatcher$1.current = InvalidNestedHooksDispatcherOnMountInDEV;
+
+    try {
+      return mountState(initialState);
+    } finally {
+      ReactCurrentDispatcher$1.current = prevDispatcher;
+    }
+  },
+  useCallback: function (callback, deps) {
+    currentHookNameInDev = "useCallback";
+    mountHookTypesDev();
+    // 这里会校验依赖只能是undefined、null、array中的一种
+    checkDepsAreArrayDev(deps);
+    return mountCallback(callback, deps);
+  },
+};
+```
+
+- useState mountState
+
+```ts
+function mountState(initialState) {
+  // 创建一个Hook对象, 并且把该对象挂载到fiber.memoizedState的最后面
+  // fiber.memoizedState是一个hook组成的单链表, 保存了当前fiber的所有hook
+  // var hook = {
+  //   memoizedState: null,
+  //   baseState: null,
+  //   baseQueue: null,
+  //   queue: null,
+  //   next: null
+  // };
+  var hook = mountWorkInProgressHook();
+
+  if (typeof initialState === "function") {
+    // $FlowFixMe: Flow doesn't like mixed types
+    initialState = initialState();
+  }
+
+  hook.memoizedState = hook.baseState = initialState;
+  var queue = {
+    pending: null, // 循环链表, pending是最后一个update, pending.next是第一个update
+    interleaved: null,
+    lanes: NoLanes,
+    dispatch: null, // 保存当前hook的dispatch函数, 也就是我们平时调useState返回的第二个值
+    lastRenderedReducer: basicStateReducer,
+    lastRenderedState: initialState,
+  };
+  hook.queue = queue;
+  // const [count, setCount] = useState(1)
+  // 这里的setCount便是dispatchSetState函数
+  var dispatch = (queue.dispatch = dispatchSetState.bind(
+    null,
+    currentlyRenderingFiber$1,
+    queue
+  ));
+  return [hook.memoizedState, dispatch];
+}
+```
+
+- useState dispatchSetState
+
+```ts
+function dispatchSetState(fiber, queue, action) {
+  // 会根据当前函数触发的上下文返回不同的lane
+  // 比如如果是通过click事件触发的, 回返回SyncLane, 则该更新任务会通过微任务队列触发
+  var lane = requestUpdateLane(fiber);
+  // 生产Update对象
+  var update = {
+    lane: lane,
+    action: action,
+    hasEagerState: false,
+    eagerState: null,
+    next: null,
+  };
+
+  if (isRenderPhaseUpdate(fiber)) {
+    enqueueRenderPhaseUpdate(queue, update);
+  } else {
+    // 将Update对象添加到queue.pending链表尾
+    enqueueUpdate$1(fiber, queue, update);
+    var alternate = fiber.alternate;
+
+    // 这里是为了优化, 当两次state相同(Object.is比较)时跳过
+    // TODO:alternate === null || alternate.lanes === NoLanes代表了什么情况
+    if (
+      fiber.lanes === NoLanes &&
+      (alternate === null || alternate.lanes === NoLanes)
+    ) {
+      // The queue is currently empty, which means we can eagerly compute the
+      // next state before entering the render phase. If the new state is the
+      // same as the current state, we may be able to bail out entirely.
+      var lastRenderedReducer = queue.lastRenderedReducer;
+
+      if (lastRenderedReducer !== null) {
+        var prevDispatcher;
+
+        {
+          prevDispatcher = ReactCurrentDispatcher$1.current;
+          ReactCurrentDispatcher$1.current =
+            InvalidNestedHooksDispatcherOnUpdateInDEV;
+        }
+
+        try {
+          var currentState = queue.lastRenderedState;
+          var eagerState = lastRenderedReducer(currentState, action);
+          // Stash the eagerly computed state, and the reducer used to compute
+          // it, on the update object. If the reducer hasn't changed by the
+          // time we enter the render phase, then the eager state can be used
+          // without calling the reducer again.
+
+          update.hasEagerState = true;
+          update.eagerState = eagerState;
+
+          if (objectIs(eagerState, currentState)) {
+            // Fast path. We can bail out without scheduling React to re-render.
+            // It's still possible that we'll need to rebase this update later,
+            // if the component re-renders for a different reason and by that
+            // time the reducer has changed.
+            return;
+          }
+        } catch (error) {
+          // Suppress the error. It will throw again in the render phase.
+        } finally {
+          {
+            ReactCurrentDispatcher$1.current = prevDispatcher;
+          }
+        }
+      }
+    }
+
+    var eventTime = requestEventTime();
+    // 开始生成更新任务(微/宏任务)
+    var root = scheduleUpdateOnFiber(fiber, lane, eventTime);
+
+    // TODO:作用是什么
+    if (root !== null) {
+      entangleTransitionUpdate(root, queue, lane);
+    }
+  }
+
+  markUpdateInDevTools(fiber, lane);
+}
+```
+
+- useCallback mountCallback
+
+```ts
+function mountCallback(callback, deps) {
+  // 同mountState一样
+  var hook = mountWorkInProgressHook();
+  var nextDeps = deps === undefined ? null : deps;
+  // 将回调和依赖组装成一个数组保存起来
+  hook.memoizedState = [callback, nextDeps];
+  return callback;
+}
+```
+
+- HooksDispatcherOnUpdateInDEV
+
+```ts
+var HooksDispatcherOnUpdateInDEV = {
+  useState: function (initialState) {
+    currentHookNameInDev = "useState";
+    updateHookTypesDev();
+    var prevDispatcher = ReactCurrentDispatcher$1.current;
+    ReactCurrentDispatcher$1.current =
+      InvalidNestedHooksDispatcherOnUpdateInDEV;
+
+    try {
+      return updateState(initialState);
+    } finally {
+      ReactCurrentDispatcher$1.current = prevDispatcher;
+    }
+  },
+  useCallback: function (callback, deps) {
+    currentHookNameInDev = "useCallback";
+    updateHookTypesDev();
+    return updateCallback(callback, deps);
+  },
+};
+```
+
+- useState updateState
+
+```ts
+function updateState(initialState) {
+  // 所以update阶段, 执行useState相当于执行useReducer
+  return updateReducer(basicStateReducer);
+}
+```
+
+- updateCallback updateCallback
+
+```ts
+function updateCallback(callback, deps) {
+  // 获取当前Hook对象, 依次取currentlyRenderingFiber$1.memoizedState链表上面的节点即可
+  var hook = updateWorkInProgressHook();
+  var nextDeps = deps === undefined ? null : deps;
+  var prevState = hook.memoizedState;
+
+  if (prevState !== null) {
+    // useCallback(() => {})这种用法不会走依赖比较逻辑
+    if (nextDeps !== null) {
+      var prevDeps = prevState[1];
+      // 比较两次依赖项是否相同, 如果相同则返回之前的回调, 否则返回新的回调
+      // 依赖比较逻辑:
+      // 1. length是否相同, 不同直接返回false
+      // 2. 遍历依赖, 依次比较(Object.is)nextDeps[i]和prevDeps[i], 不相同则返回false, 若都相同则返回true
+      if (areHookInputsEqual(nextDeps, prevDeps)) {
+        return prevState[0];
+      }
+    }
+  }
+
+  hook.memoizedState = [callback, nextDeps];
+  return callback;
+}
+```
+
 ##### completeUnitOfWork
 
 ```ts
@@ -1365,3 +1785,5 @@ function bubbleProperties(completedWork) {
       执行`bubbleProperties`将所有子节点的`flags`和`subtreeFlags`归并到当前节点的`subtreeFlags`, 将所有子节点的`lanes`和`childLanes`归并到`childLanes`上面
    2. 判断当前节点是否还有兄弟节点, 如果有则将`workInProgress`设置为当前节点的兄弟节点, 跳出当前函数
    3. 如果没有兄弟节点, 将当前节点设为`returnFiber`再执行第一步
+
+# commit 阶段
