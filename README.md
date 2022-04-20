@@ -1256,6 +1256,12 @@ var HooksDispatcherOnMountInDEV = {
     mountHookTypesDev();
     return readContext(context);
   },
+  useImperativeHandle: function (ref, create, deps) {
+    currentHookNameInDev = "useImperativeHandle";
+    mountHookTypesDev();
+    checkDepsAreArrayDev(deps);
+    return mountImperativeHandle(ref, create, deps);
+  },
 };
 ```
 
@@ -1553,6 +1559,119 @@ function readContext(context) {
 }
 ```
 
+- useImperativeHandle mountImperativeHandle
+
+```ts
+// 只对部分信息做了保存, 具体的更新ref的操作需要在commit阶段执行
+function mountImperativeHandle(ref, create, deps) {
+  {
+    if (typeof create !== "function") {
+      error(
+        "Expected useImperativeHandle() second argument to be a function " +
+          "that creates a handle. Instead received: %s.",
+        create !== null ? typeof create : "null"
+      );
+    }
+  }
+
+  // TODO: If deps are provided, should we skip comparing the ref itself?
+  var effectDeps =
+    deps !== null && deps !== undefined ? deps.concat([ref]) : null;
+  // 会给fiber打上Update | LayoutStatic标记
+  var fiberFlags = Update;
+
+  {
+    fiberFlags |= LayoutStatic;
+  }
+
+  if ((currentlyRenderingFiber$1.mode & StrictEffectsMode) !== NoMode) {
+    fiberFlags |= MountLayoutDev;
+  }
+
+  // 将create函数以imperativeHandleEffect.bind(null, create, ref)的形式保存到effect中
+  return mountEffectImpl(
+    fiberFlags,
+    Layout,
+    imperativeHandleEffect.bind(null, create, ref),
+    effectDeps
+  );
+}
+function mountEffectImpl(fiberFlags, hookFlags, create, deps) {
+  var hook = mountWorkInProgressHook();
+  var nextDeps = deps === undefined ? null : deps;
+  currentlyRenderingFiber$1.flags |= fiberFlags;
+  // effect会保存到hook.memoizedState, effect会打上HasEffect | hookFlags标记
+  hook.memoizedState = pushEffect(
+    HasEffect | hookFlags,
+    create,
+    undefined,
+    nextDeps
+  );
+}
+function pushEffect(tag, create, destroy, deps) {
+  var effect = {
+    tag: tag,
+    create: create,
+    destroy: destroy,
+    deps: deps,
+    // 这里会构成环
+    next: null,
+  };
+  var componentUpdateQueue = currentlyRenderingFiber$1.updateQueue;
+
+  // 将effect append到updateQueue的lastEffect链表中
+  if (componentUpdateQueue === null) {
+    componentUpdateQueue = createFunctionComponentUpdateQueue();
+    currentlyRenderingFiber$1.updateQueue = componentUpdateQueue;
+    componentUpdateQueue.lastEffect = effect.next = effect;
+  } else {
+    var lastEffect = componentUpdateQueue.lastEffect;
+
+    if (lastEffect === null) {
+      componentUpdateQueue.lastEffect = effect.next = effect;
+    } else {
+      var firstEffect = lastEffect.next;
+      lastEffect.next = effect;
+      effect.next = firstEffect;
+      componentUpdateQueue.lastEffect = effect;
+    }
+  }
+
+  return effect;
+}
+function imperativeHandleEffect(create, ref) {
+  if (typeof ref === "function") {
+    var refCallback = ref;
+
+    var _inst = create();
+
+    refCallback(_inst);
+    return function () {
+      refCallback(null);
+    };
+  } else if (ref !== null && ref !== undefined) {
+    var refObject = ref;
+
+    {
+      if (!refObject.hasOwnProperty("current")) {
+        error(
+          "Expected useImperativeHandle() first argument to either be a " +
+            "ref callback or React.createRef() object. Instead received: %s.",
+          "an object with keys {" + Object.keys(refObject).join(", ") + "}"
+        );
+      }
+    }
+
+    var _inst2 = create();
+
+    refObject.current = _inst2;
+    return function () {
+      refObject.current = null;
+    };
+  }
+}
+```
+
 - HooksDispatcherOnUpdateInDEV
 
 ```ts
@@ -1614,6 +1733,11 @@ var HooksDispatcherOnUpdateInDEV = {
     currentHookNameInDev = "useContext";
     updateHookTypesDev();
     return readContext(context);
+  },
+  useImperativeHandle: function (ref, create, deps) {
+    currentHookNameInDev = "useImperativeHandle";
+    updateHookTypesDev();
+    return updateImperativeHandle(ref, create, deps);
   },
 };
 ```
@@ -1856,6 +1980,32 @@ function updateRef() {
 
   // 直接返回之前存储的对象, 说明该对象在rerender时不会更新
   return hook.memoizedState;
+}
+```
+
+- useImperativeHandle updateImperativeHandle
+
+```ts
+function updateImperativeHandle(ref, create, deps) {
+  {
+    if (typeof create !== "function") {
+      error(
+        "Expected useImperativeHandle() second argument to be a function " +
+          "that creates a handle. Instead received: %s.",
+        create !== null ? typeof create : "null"
+      );
+    }
+  } // TODO: If deps are provided, should we skip comparing the ref itself?
+
+  var effectDeps =
+    deps !== null && deps !== undefined ? deps.concat([ref]) : null;
+  // 同mount阶段大致相同, 但是会比较依赖, 如果依赖没有发生变化则不会为effect打HasEffect标记, 也不会为fiber打上任何标记
+  return updateEffectImpl(
+    Update,
+    Layout,
+    imperativeHandleEffect.bind(null, create, ref),
+    effectDeps
+  );
 }
 ```
 
