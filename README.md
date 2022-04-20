@@ -1251,6 +1251,11 @@ var HooksDispatcherOnMountInDEV = {
     mountHookTypesDev();
     return mountRef(initialValue);
   },
+  useContext: function (context) {
+    currentHookNameInDev = "useContext";
+    mountHookTypesDev();
+    return readContext(context);
+  },
 };
 ```
 
@@ -1492,12 +1497,70 @@ function mountRef(initialValue) {
 }
 ```
 
+- useContext readContext
+
+```ts
+// 参数context是通过React.createContext创建的一个Context对象
+// 将用户数据保存到内部的_currentValue属性上
+function readContext(context) {
+  {
+    // This warning would fire if you read context inside a Hook like useMemo.
+    // Unlike the class check below, it's not enforced in production for perf.
+    if (isDisallowedContextReadInDEV) {
+      error(
+        "Context can only be read while React is rendering. " +
+          "In classes, you can read it in the render method or getDerivedStateFromProps. " +
+          "In function components, you can read it directly in the function body, but not " +
+          "inside Hooks like useReducer() or useMemo()."
+      );
+    }
+  }
+
+  var value = context._currentValue;
+
+  if (lastFullyObservedContext === context);
+  else {
+    // 创建contextItem对象, 该对象会缓存当前context的数据, 然后将其append到fiber.dependencies.firstContext链表尾部
+    // TODO: 暂时不清楚firstContext链表的作用
+    var contextItem = {
+      context: context,
+      memoizedValue: value,
+      next: null,
+    };
+
+    if (lastContextDependency === null) {
+      if (currentlyRenderingFiber === null) {
+        throw new Error(
+          "Context can only be read while React is rendering. " +
+            "In classes, you can read it in the render method or getDerivedStateFromProps. " +
+            "In function components, you can read it directly in the function body, but not " +
+            "inside Hooks like useReducer() or useMemo()."
+        );
+      } // This is the first dependency for this component. Create a new list.
+
+      lastContextDependency = contextItem;
+      currentlyRenderingFiber.dependencies = {
+        lanes: NoLanes,
+        firstContext: contextItem,
+      };
+    } else {
+      // Append a new context item.
+      lastContextDependency = lastContextDependency.next = contextItem;
+    }
+  }
+
+  return value;
+}
+```
+
 - HooksDispatcherOnUpdateInDEV
 
 ```ts
 var HooksDispatcherOnUpdateInDEV = {
   useReducer: function (reducer, initialArg, init) {
     currentHookNameInDev = "useReducer";
+    // 校验当前hook和上次渲染时相同index位置的hook是否发生顺序变化
+    // 如果我们有将内置的hook放到条件语句中执行, 这里会报警告
     updateHookTypesDev();
     var prevDispatcher = ReactCurrentDispatcher$1.current;
     ReactCurrentDispatcher$1.current =
@@ -1545,6 +1608,12 @@ var HooksDispatcherOnUpdateInDEV = {
     currentHookNameInDev = "useRef";
     updateHookTypesDev();
     return updateRef();
+  },
+  // 同mount阶段的useContext几乎没区别
+  useContext: function (context) {
+    currentHookNameInDev = "useContext";
+    updateHookTypesDev();
+    return readContext(context);
   },
 };
 ```
