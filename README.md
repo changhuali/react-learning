@@ -1232,6 +1232,11 @@ var HooksDispatcherOnMountInDEV = {
     checkDepsAreArrayDev(deps);
     return mountCallback(callback, deps);
   },
+  useRef: function (initialValue) {
+    currentHookNameInDev = "useRef";
+    mountHookTypesDev();
+    return mountRef(initialValue);
+  },
 };
 ```
 
@@ -1439,6 +1444,24 @@ function mountCallback(callback, deps) {
 }
 ```
 
+- useRef mountRef
+
+```ts
+function mountRef(initialValue) {
+  // 同上
+  var hook = mountWorkInProgressHook();
+
+  {
+    var _ref2 = {
+      current: initialValue,
+    };
+    // 值会被包装到一个对象, 然后将该对象存储起来
+    hook.memoizedState = _ref2;
+    return _ref2;
+  }
+}
+```
+
 - HooksDispatcherOnUpdateInDEV
 
 ```ts
@@ -1473,6 +1496,11 @@ var HooksDispatcherOnUpdateInDEV = {
     currentHookNameInDev = "useCallback";
     updateHookTypesDev();
     return updateCallback(callback, deps);
+  },
+  useRef: function (initialValue) {
+    currentHookNameInDev = "useRef";
+    updateHookTypesDev();
+    return updateRef();
   },
 };
 ```
@@ -1678,6 +1706,17 @@ function updateCallback(callback, deps) {
 
   hook.memoizedState = [callback, nextDeps];
   return callback;
+}
+```
+
+- useRef updateRef
+
+```ts
+function updateRef() {
+  var hook = updateWorkInProgressHook();
+
+  // 直接返回之前存储的对象, 说明该对象在rerender时不会更新
+  return hook.memoizedState;
 }
 ```
 

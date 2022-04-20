@@ -1,5 +1,5 @@
 import "./App.css";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useReducer, useRef, useState } from "react";
 
 function Expensive() {
   const list = [...new Array(10)];
@@ -14,20 +14,26 @@ function Expensive() {
 }
 
 function App() {
-  const [count, setCount] = useState(0);
+  const [count, dispatch] = useReducer((state, action) => {
+    switch (action.type) {
+      case "inc":
+        return action.data;
+      default:
+        throw new Error();
+    }
+  }, 1);
   const ref = useRef();
 
-  const expensiveChild = useMemo(() => {
-    return <Expensive ref={ref} />;
-  }, []);
+  console.log("=========render");
 
   return (
     <div ref={ref}>
       {count}
       <button
         onClick={() => {
-          setCount((count) => {
-            return ++count;
+          dispatch({
+            type: "inc",
+            data: 1,
           });
         }}
       >
