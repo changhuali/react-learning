@@ -1194,821 +1194,6 @@ function renderWithHooks(
 }
 ```
 
-## hooks
-
-- HooksDispatcherOnMountInDEV
-
-```ts
-var HooksDispatcherOnMountInDEV = {
-  useReducer: function (reducer, initialArg, init) {
-    currentHookNameInDev = "useReducer";
-    mountHookTypesDev();
-    var prevDispatcher = ReactCurrentDispatcher$1.current;
-    // 将hooks切换到warning形态, 如果在这此hook调用期间调用了其他内置hook, 则会报警告
-    ReactCurrentDispatcher$1.current = InvalidNestedHooksDispatcherOnMountInDEV;
-
-    try {
-      return mountReducer(reducer, initialArg, init);
-    } finally {
-      ReactCurrentDispatcher$1.current = prevDispatcher;
-    }
-  },
-  useState: function (initialState) {
-    currentHookNameInDev = "useState";
-    mountHookTypesDev();
-    var prevDispatcher = ReactCurrentDispatcher$1.current;
-    // 同上
-    ReactCurrentDispatcher$1.current = InvalidNestedHooksDispatcherOnMountInDEV;
-
-    try {
-      return mountState(initialState);
-    } finally {
-      ReactCurrentDispatcher$1.current = prevDispatcher;
-    }
-  },
-  useCallback: function (callback, deps) {
-    currentHookNameInDev = "useCallback";
-    mountHookTypesDev();
-    // 这里会校验依赖只能是undefined、null、array中的一种
-    checkDepsAreArrayDev(deps);
-    return mountCallback(callback, deps);
-  },
-  useMemo: function (create, deps) {
-    currentHookNameInDev = "useMemo";
-    mountHookTypesDev();
-    checkDepsAreArrayDev(deps);
-    var prevDispatcher = ReactCurrentDispatcher$1.current;
-    ReactCurrentDispatcher$1.current = InvalidNestedHooksDispatcherOnMountInDEV;
-
-    try {
-      return mountMemo(create, deps);
-    } finally {
-      ReactCurrentDispatcher$1.current = prevDispatcher;
-    }
-  },
-  useRef: function (initialValue) {
-    currentHookNameInDev = "useRef";
-    mountHookTypesDev();
-    return mountRef(initialValue);
-  },
-  useContext: function (context) {
-    currentHookNameInDev = "useContext";
-    mountHookTypesDev();
-    return readContext(context);
-  },
-  useImperativeHandle: function (ref, create, deps) {
-    currentHookNameInDev = "useImperativeHandle";
-    mountHookTypesDev();
-    checkDepsAreArrayDev(deps);
-    return mountImperativeHandle(ref, create, deps);
-  },
-};
-```
-
-- useReducer mountReducer
-
-```ts
-function mountReducer(reducer, initialArg, init) {
-  // 创建一个Hook对象, 并且把该对象挂载到fiber.memoizedState的最后面
-  // fiber.memoizedState是一个hook组成的单链表, 保存了当前fiber的所有hook
-  // var hook = {
-  //   memoizedState: null,
-  //   baseState: null,
-  //   baseQueue: null,
-  //   queue: null,
-  //   next: null
-  // };
-  var hook = mountWorkInProgressHook();
-  var initialState;
-
-  if (init !== undefined) {
-    initialState = init(initialArg);
-  } else {
-    initialState = initialArg;
-  }
-
-  hook.memoizedState = hook.baseState = initialState;
-  var queue = {
-    pending: null, // 循环链表, pending是最后一个update, pending.next是第一个update
-    interleaved: null,
-    lanes: NoLanes,
-    dispatch: null, // 保存当前hook的dispatch函数, 也就是我们平时调dispatch返回的第二个值
-    lastRenderedReducer: reducer,
-    lastRenderedState: initialState,
-  };
-  hook.queue = queue;
-  // 调用dispatch时实际上是调用的dispatchReducerAction函数
-  var dispatch = (queue.dispatch = dispatchReducerAction.bind(
-    null,
-    currentlyRenderingFiber$1,
-    queue
-  ));
-  return [hook.memoizedState, dispatch];
-}
-```
-
-- useReducer dispatchReducerAction
-
-```ts
-function dispatchReducerAction(fiber, queue, action) {
-  // 会根据当前函数触发的上下文返回不同的lane
-  // 比如如果是通过click事件触发的, 回返回SyncLane, 则该更新任务会通过微任务队列触发
-  var lane = requestUpdateLane(fiber);
-  // 创建一个Update对象
-  var update = {
-    lane: lane,
-    action: action,
-    hasEagerState: false,
-    eagerState: null,
-    next: null,
-  };
-
-  if (isRenderPhaseUpdate(fiber)) {
-    enqueueRenderPhaseUpdate(queue, update);
-  } else {
-    // 这里相较于useState, 在设置相同状态时未避免触发rerender
-    // 将Update对象添加到queue.pending链表尾
-    enqueueUpdate$1(fiber, queue, update);
-    var eventTime = requestEventTime();
-    // 将更新任务推入调度中心(微/宏任务)
-    var root = scheduleUpdateOnFiber(fiber, lane, eventTime);
-
-    // TODO:作用是什么
-    if (root !== null) {
-      entangleTransitionUpdate(root, queue, lane);
-    }
-  }
-
-  markUpdateInDevTools(fiber, lane);
-}
-```
-
-- useState mountState
-
-```ts
-// 其实mountState和mountReducer十分相似, 可以看出useState其实相当于一个极简版的useReducer
-function mountState(initialState) {
-  // 同上
-  var hook = mountWorkInProgressHook();
-
-  if (typeof initialState === "function") {
-    // $FlowFixMe: Flow doesn't like mixed types
-    initialState = initialState();
-  }
-
-  hook.memoizedState = hook.baseState = initialState;
-  var queue = {
-    pending: null,
-    interleaved: null,
-    lanes: NoLanes,
-    dispatch: null,
-    lastRenderedReducer: basicStateReducer,
-    lastRenderedState: initialState,
-  };
-  hook.queue = queue;
-  // 调用dispatch时实际上是调用的dispatchSetState函数
-  var dispatch = (queue.dispatch = dispatchSetState.bind(
-    null,
-    currentlyRenderingFiber$1,
-    queue
-  ));
-  return [hook.memoizedState, dispatch];
-}
-```
-
-- useState dispatchSetState
-
-```ts
-function dispatchSetState(fiber, queue, action) {
-  // 同上
-  var lane = requestUpdateLane(fiber);
-  var update = {
-    lane: lane,
-    action: action,
-    hasEagerState: false,
-    eagerState: null,
-    next: null,
-  };
-
-  if (isRenderPhaseUpdate(fiber)) {
-    enqueueRenderPhaseUpdate(queue, update);
-  } else {
-    enqueueUpdate$1(fiber, queue, update);
-    var alternate = fiber.alternate;
-
-    // 这里是为了优化, 在设置相同状态时避免触发rerender
-    if (
-      fiber.lanes === NoLanes &&
-      (alternate === null || alternate.lanes === NoLanes)
-    ) {
-      // The queue is currently empty, which means we can eagerly compute the
-      // next state before entering the render phase. If the new state is the
-      // same as the current state, we may be able to bail out entirely.
-      var lastRenderedReducer = queue.lastRenderedReducer;
-
-      if (lastRenderedReducer !== null) {
-        var prevDispatcher;
-
-        {
-          prevDispatcher = ReactCurrentDispatcher$1.current;
-          ReactCurrentDispatcher$1.current =
-            InvalidNestedHooksDispatcherOnUpdateInDEV;
-        }
-
-        try {
-          var currentState = queue.lastRenderedState;
-          var eagerState = lastRenderedReducer(currentState, action);
-          // Stash the eagerly computed state, and the reducer used to compute
-          // it, on the update object. If the reducer hasn't changed by the
-          // time we enter the render phase, then the eager state can be used
-          // without calling the reducer again.
-
-          update.hasEagerState = true;
-          update.eagerState = eagerState;
-
-          if (objectIs(eagerState, currentState)) {
-            // Fast path. We can bail out without scheduling React to re-render.
-            // It's still possible that we'll need to rebase this update later,
-            // if the component re-renders for a different reason and by that
-            // time the reducer has changed.
-            return;
-          }
-        } catch (error) {
-          // Suppress the error. It will throw again in the render phase.
-        } finally {
-          {
-            ReactCurrentDispatcher$1.current = prevDispatcher;
-          }
-        }
-      }
-    }
-
-    var eventTime = requestEventTime();
-    var root = scheduleUpdateOnFiber(fiber, lane, eventTime);
-
-    if (root !== null) {
-      entangleTransitionUpdate(root, queue, lane);
-    }
-  }
-
-  markUpdateInDevTools(fiber, lane);
-}
-```
-
-- useCallback mountCallback
-
-```ts
-function mountCallback(callback, deps) {
-  // 同上
-  var hook = mountWorkInProgressHook();
-
-  var nextDeps = deps === undefined ? null : deps;
-  // 将回调和依赖组装成一个数组保存起来
-  hook.memoizedState = [callback, nextDeps];
-  return callback;
-}
-```
-
-- useMemo mountMemo
-
-```ts
-// 和useCallback的结构高度相似, 只是这里存储和返回的是回调的执行结果, 而useCallback存储和返回的是回调本身
-function mountMemo(nextCreate, deps) {
-  // 同上
-  var hook = mountWorkInProgressHook();
-  // 同上
-  var nextDeps = deps === undefined ? null : deps;
-  var nextValue = nextCreate();
-
-  hook.memoizedState = [nextValue, nextDeps];
-  return nextValue;
-}
-```
-
-- useRef mountRef
-
-```ts
-function mountRef(initialValue) {
-  // 同上
-  var hook = mountWorkInProgressHook();
-
-  {
-    var _ref2 = {
-      current: initialValue,
-    };
-    // 值会被包装到一个对象, 然后将该对象存储起来
-    hook.memoizedState = _ref2;
-    return _ref2;
-  }
-}
-```
-
-- useContext readContext
-
-```ts
-// 参数context是通过React.createContext创建的一个Context对象
-// 将用户数据保存到内部的_currentValue属性上
-function readContext(context) {
-  {
-    // This warning would fire if you read context inside a Hook like useMemo.
-    // Unlike the class check below, it's not enforced in production for perf.
-    if (isDisallowedContextReadInDEV) {
-      error(
-        "Context can only be read while React is rendering. " +
-          "In classes, you can read it in the render method or getDerivedStateFromProps. " +
-          "In function components, you can read it directly in the function body, but not " +
-          "inside Hooks like useReducer() or useMemo()."
-      );
-    }
-  }
-
-  var value = context._currentValue;
-
-  if (lastFullyObservedContext === context);
-  else {
-    // 创建contextItem对象, 该对象会缓存当前context的数据, 然后将其append到fiber.dependencies.firstContext链表尾部
-    // TODO: 暂时不清楚firstContext链表的作用
-    var contextItem = {
-      context: context,
-      memoizedValue: value,
-      next: null,
-    };
-
-    if (lastContextDependency === null) {
-      if (currentlyRenderingFiber === null) {
-        throw new Error(
-          "Context can only be read while React is rendering. " +
-            "In classes, you can read it in the render method or getDerivedStateFromProps. " +
-            "In function components, you can read it directly in the function body, but not " +
-            "inside Hooks like useReducer() or useMemo()."
-        );
-      } // This is the first dependency for this component. Create a new list.
-
-      lastContextDependency = contextItem;
-      currentlyRenderingFiber.dependencies = {
-        lanes: NoLanes,
-        firstContext: contextItem,
-      };
-    } else {
-      // Append a new context item.
-      lastContextDependency = lastContextDependency.next = contextItem;
-    }
-  }
-
-  return value;
-}
-```
-
-- useImperativeHandle mountImperativeHandle
-
-```ts
-// 只对部分信息做了保存, 具体的更新ref的操作需要在commit阶段执行
-function mountImperativeHandle(ref, create, deps) {
-  {
-    if (typeof create !== "function") {
-      error(
-        "Expected useImperativeHandle() second argument to be a function " +
-          "that creates a handle. Instead received: %s.",
-        create !== null ? typeof create : "null"
-      );
-    }
-  }
-
-  // TODO: If deps are provided, should we skip comparing the ref itself?
-  var effectDeps =
-    deps !== null && deps !== undefined ? deps.concat([ref]) : null;
-  // 会给fiber打上Update | LayoutStatic标记
-  var fiberFlags = Update;
-
-  {
-    fiberFlags |= LayoutStatic;
-  }
-
-  if ((currentlyRenderingFiber$1.mode & StrictEffectsMode) !== NoMode) {
-    fiberFlags |= MountLayoutDev;
-  }
-
-  // 将create函数以imperativeHandleEffect.bind(null, create, ref)的形式保存到effect中
-  return mountEffectImpl(
-    fiberFlags,
-    Layout,
-    imperativeHandleEffect.bind(null, create, ref),
-    effectDeps
-  );
-}
-function mountEffectImpl(fiberFlags, hookFlags, create, deps) {
-  var hook = mountWorkInProgressHook();
-  var nextDeps = deps === undefined ? null : deps;
-  currentlyRenderingFiber$1.flags |= fiberFlags;
-  // effect会保存到hook.memoizedState, effect会打上HasEffect | hookFlags标记
-  hook.memoizedState = pushEffect(
-    HasEffect | hookFlags,
-    create,
-    undefined,
-    nextDeps
-  );
-}
-function pushEffect(tag, create, destroy, deps) {
-  var effect = {
-    tag: tag,
-    create: create,
-    destroy: destroy,
-    deps: deps,
-    // 这里会构成环
-    next: null,
-  };
-  var componentUpdateQueue = currentlyRenderingFiber$1.updateQueue;
-
-  // 将effect append到updateQueue的lastEffect链表中
-  if (componentUpdateQueue === null) {
-    componentUpdateQueue = createFunctionComponentUpdateQueue();
-    currentlyRenderingFiber$1.updateQueue = componentUpdateQueue;
-    componentUpdateQueue.lastEffect = effect.next = effect;
-  } else {
-    var lastEffect = componentUpdateQueue.lastEffect;
-
-    if (lastEffect === null) {
-      componentUpdateQueue.lastEffect = effect.next = effect;
-    } else {
-      var firstEffect = lastEffect.next;
-      lastEffect.next = effect;
-      effect.next = firstEffect;
-      componentUpdateQueue.lastEffect = effect;
-    }
-  }
-
-  return effect;
-}
-function imperativeHandleEffect(create, ref) {
-  if (typeof ref === "function") {
-    var refCallback = ref;
-
-    var _inst = create();
-
-    refCallback(_inst);
-    return function () {
-      refCallback(null);
-    };
-  } else if (ref !== null && ref !== undefined) {
-    var refObject = ref;
-
-    {
-      if (!refObject.hasOwnProperty("current")) {
-        error(
-          "Expected useImperativeHandle() first argument to either be a " +
-            "ref callback or React.createRef() object. Instead received: %s.",
-          "an object with keys {" + Object.keys(refObject).join(", ") + "}"
-        );
-      }
-    }
-
-    var _inst2 = create();
-
-    refObject.current = _inst2;
-    return function () {
-      refObject.current = null;
-    };
-  }
-}
-```
-
-- HooksDispatcherOnUpdateInDEV
-
-```ts
-var HooksDispatcherOnUpdateInDEV = {
-  useReducer: function (reducer, initialArg, init) {
-    currentHookNameInDev = "useReducer";
-    // 校验当前hook和上次渲染时相同index位置的hook是否发生顺序变化
-    // 如果我们有将内置的hook放到条件语句中执行, 这里会报警告
-    updateHookTypesDev();
-    var prevDispatcher = ReactCurrentDispatcher$1.current;
-    ReactCurrentDispatcher$1.current =
-      InvalidNestedHooksDispatcherOnUpdateInDEV;
-
-    try {
-      return updateReducer(reducer, initialArg, init);
-    } finally {
-      ReactCurrentDispatcher$1.current = prevDispatcher;
-    }
-  },
-  useState: function (initialState) {
-    currentHookNameInDev = "useState";
-    updateHookTypesDev();
-    var prevDispatcher = ReactCurrentDispatcher$1.current;
-    ReactCurrentDispatcher$1.current =
-      InvalidNestedHooksDispatcherOnUpdateInDEV;
-
-    try {
-      return updateState(initialState);
-    } finally {
-      ReactCurrentDispatcher$1.current = prevDispatcher;
-    }
-  },
-  useCallback: function (callback, deps) {
-    currentHookNameInDev = "useCallback";
-    updateHookTypesDev();
-    return updateCallback(callback, deps);
-  },
-  useMemo: function (create, deps) {
-    currentHookNameInDev = "useMemo";
-    updateHookTypesDev();
-    // 不允许嵌套
-    var prevDispatcher = ReactCurrentDispatcher$1.current;
-    ReactCurrentDispatcher$1.current =
-      InvalidNestedHooksDispatcherOnUpdateInDEV;
-
-    try {
-      return updateMemo(create, deps);
-    } finally {
-      ReactCurrentDispatcher$1.current = prevDispatcher;
-    }
-  },
-  useRef: function (initialValue) {
-    currentHookNameInDev = "useRef";
-    updateHookTypesDev();
-    return updateRef();
-  },
-  // 同mount阶段的useContext几乎没区别
-  useContext: function (context) {
-    currentHookNameInDev = "useContext";
-    updateHookTypesDev();
-    return readContext(context);
-  },
-  useImperativeHandle: function (ref, create, deps) {
-    currentHookNameInDev = "useImperativeHandle";
-    updateHookTypesDev();
-    return updateImperativeHandle(ref, create, deps);
-  },
-};
-```
-
-- useReducer updateReducer
-
-```ts
-// 其实updateReducer的工作同processUpdateQueue差不多, 只是处理对象由updateQueue变为了hook
-// 所以这里只会做些简单分析
-function updateReducer(reducer, initialArg, init) {
-  // 获取当前Hook对象, 依次取currentlyRenderingFiber$1.memoizedState链表上面的节点即可
-  var hook = updateWorkInProgressHook();
-  var queue = hook.queue;
-
-  if (queue === null) {
-    throw new Error(
-      "Should have a queue. This is likely a bug in React. Please file an issue."
-    );
-  }
-
-  queue.lastRenderedReducer = reducer;
-  var current = currentHook;
-
-  // The last rebase update that is NOT part of the base state.
-  var baseQueue = current.baseQueue;
-  // The last pending update that hasn't been processed yet.
-  var pendingQueue = queue.pending;
-  if (pendingQueue !== null) {
-    // We have new updates that haven't been processed yet.
-    // We'll add them to the base queue.
-    // 恢复之前保存的Update, 并将新的Update加入到链表尾
-    if (baseQueue !== null) {
-      // Merge the pending queue and the base queue.
-      var baseFirst = baseQueue.next;
-      var pendingFirst = pendingQueue.next;
-      baseQueue.next = pendingFirst;
-      pendingQueue.next = baseFirst;
-    }
-
-    {
-      if (current.baseQueue !== baseQueue) {
-        // Internal invariant that should never happen, but feasibly could in
-        // the future if we implement resuming, or some form of that.
-        error(
-          "Internal error: Expected work-in-progress queue to be a clone. " +
-            "This is a bug in React."
-        );
-      }
-    }
-
-    // 将Update同步到currentHook, 防止中断导致Update丢失
-    current.baseQueue = baseQueue = pendingQueue;
-    queue.pending = null;
-  }
-
-  // 处理Update, 生成新的state和newBaseQueue
-  if (baseQueue !== null) {
-    // We have a queue to process.
-    var first = baseQueue.next;
-    var newState = current.baseState;
-    var newBaseState = null;
-    var newBaseQueueFirst = null;
-    var newBaseQueueLast = null;
-    var update = first;
-
-    do {
-      var updateLane = update.lane;
-
-      if (!isSubsetOfLanes(renderLanes, updateLane)) {
-        // Priority is insufficient. Skip this update. If this is the first
-        // skipped update, the previous update/state is the new base
-        // update/state.
-        var clone = {
-          lane: updateLane,
-          action: update.action,
-          hasEagerState: update.hasEagerState,
-          eagerState: update.eagerState,
-          next: null,
-        };
-
-        if (newBaseQueueLast === null) {
-          newBaseQueueFirst = newBaseQueueLast = clone;
-          newBaseState = newState;
-        } else {
-          newBaseQueueLast = newBaseQueueLast.next = clone;
-        }
-
-        // Update the remaining priority in the queue.
-        // TODO: Don't need to accumulate this. Instead, we can remove
-        // renderLanes from the original lanes.
-        currentlyRenderingFiber$1.lanes = mergeLanes(
-          currentlyRenderingFiber$1.lanes,
-          updateLane
-        );
-        markSkippedUpdateLanes(updateLane);
-      } else {
-        // This update does have sufficient priority.
-        if (newBaseQueueLast !== null) {
-          var _clone = {
-            // This update is going to be committed so we never want uncommit
-            // it. Using NoLane works because 0 is a subset of all bitmasks, so
-            // this will never be skipped by the check above.
-            lane: NoLane,
-            action: update.action,
-            hasEagerState: update.hasEagerState,
-            eagerState: update.eagerState,
-            next: null,
-          };
-          newBaseQueueLast = newBaseQueueLast.next = _clone;
-        } // Process this update.
-
-        if (update.hasEagerState) {
-          // If this update is a state update (not a reducer) and was processed eagerly,
-          // we can use the eagerly computed state
-          newState = update.eagerState;
-        } else {
-          var action = update.action;
-          newState = reducer(newState, action);
-        }
-      }
-
-      update = update.next;
-    } while (update !== null && update !== first);
-
-    if (newBaseQueueLast === null) {
-      newBaseState = newState;
-    } else {
-      newBaseQueueLast.next = newBaseQueueFirst;
-    }
-
-    // Mark that the fiber performed work, but only if the new state is
-    // different from the current state.
-    if (!objectIs(newState, hook.memoizedState)) {
-      markWorkInProgressReceivedUpdate();
-    }
-
-    hook.memoizedState = newState;
-    hook.baseState = newBaseState;
-    hook.baseQueue = newBaseQueueLast;
-    queue.lastRenderedState = newState;
-  }
-
-  // Interleaved updates are stored on a separate queue. We aren't going to
-  // process them during this render, but we do need to track which lanes
-  // are remaining.
-  var lastInterleaved = queue.interleaved;
-
-  if (lastInterleaved !== null) {
-    var interleaved = lastInterleaved;
-
-    do {
-      var interleavedLane = interleaved.lane;
-      currentlyRenderingFiber$1.lanes = mergeLanes(
-        currentlyRenderingFiber$1.lanes,
-        interleavedLane
-      );
-      markSkippedUpdateLanes(interleavedLane);
-      interleaved = interleaved.next;
-    } while (interleaved !== lastInterleaved);
-  } else if (baseQueue === null) {
-    // `queue.lanes` is used for entangling transitions. We can set it back to
-    // zero once the queue is empty.
-    queue.lanes = NoLanes;
-  }
-
-  var dispatch = queue.dispatch;
-  // TODO:为什么不是返回hook.baseState
-  return [hook.memoizedState, dispatch];
-}
-```
-
-- useState updateState
-
-```ts
-function updateState(initialState) {
-  // 所以update阶段, 执行useState相当于执行useReducer
-  return updateReducer(basicStateReducer);
-}
-```
-
-- updateCallback updateCallback
-
-```ts
-function updateCallback(callback, deps) {
-  // 同上
-  var hook = updateWorkInProgressHook();
-  var nextDeps = deps === undefined ? null : deps;
-  var prevState = hook.memoizedState;
-
-  if (prevState !== null) {
-    // useCallback(() => {})这种用法不会走依赖比较逻辑
-    if (nextDeps !== null) {
-      var prevDeps = prevState[1];
-      // 比较两次依赖项是否相同, 如果相同则返回之前的回调, 否则返回新的回调
-      // 依赖比较逻辑:
-      // 1. length是否相同, 不同直接返回false
-      // 2. 遍历依赖, 依次比较(Object.is)nextDeps[i]和prevDeps[i], 不相同则返回false, 若都相同则返回true
-      if (areHookInputsEqual(nextDeps, prevDeps)) {
-        return prevState[0];
-      }
-    }
-  }
-
-  hook.memoizedState = [callback, nextDeps];
-  return callback;
-}
-```
-
-- useMemo updateMemo
-
-```ts
-function updateMemo(nextCreate, deps) {
-  // 同上
-  var hook = updateWorkInProgressHook();
-  var nextDeps = deps === undefined ? null : deps;
-  var prevState = hook.memoizedState;
-
-  if (prevState !== null) {
-    // 同上
-    if (nextDeps !== null) {
-      var prevDeps = prevState[1];
-
-      if (areHookInputsEqual(nextDeps, prevDeps)) {
-        return prevState[0];
-      }
-    }
-  }
-
-  var nextValue = nextCreate();
-  hook.memoizedState = [nextValue, nextDeps];
-  return nextValue;
-}
-```
-
-- useRef updateRef
-
-```ts
-function updateRef() {
-  var hook = updateWorkInProgressHook();
-
-  // 直接返回之前存储的对象, 说明该对象在rerender时不会更新
-  return hook.memoizedState;
-}
-```
-
-- useImperativeHandle updateImperativeHandle
-
-```ts
-function updateImperativeHandle(ref, create, deps) {
-  {
-    if (typeof create !== "function") {
-      error(
-        "Expected useImperativeHandle() second argument to be a function " +
-          "that creates a handle. Instead received: %s.",
-        create !== null ? typeof create : "null"
-      );
-    }
-  } // TODO: If deps are provided, should we skip comparing the ref itself?
-
-  var effectDeps =
-    deps !== null && deps !== undefined ? deps.concat([ref]) : null;
-  // 同mount阶段大致相同, 但是会比较依赖, 如果依赖没有发生变化则不会为effect打HasEffect标记, 也不会为fiber打上任何标记
-  return updateEffectImpl(
-    Update,
-    Layout,
-    imperativeHandleEffect.bind(null, create, ref),
-    effectDeps
-  );
-}
-```
-
 ##### completeUnitOfWork
 
 ```ts
@@ -2344,7 +1529,7 @@ function bubbleProperties(completedWork) {
 }
 ```
 
-小结:
+## 小结
 
 1. 异步任务开始执行
 2. 初次渲染`lanes`为`DefaultLane`, 所以会走`renderRootSync`
@@ -2372,3 +1557,857 @@ function bubbleProperties(completedWork) {
    3. 如果没有兄弟节点, 将当前节点设为`returnFiber`再执行第一步
 
 # commit 阶段
+
+# hooks
+
+## HooksDispatcherOnMountInDEV
+
+```ts
+var HooksDispatcherOnMountInDEV = {
+  useReducer: function (reducer, initialArg, init) {
+    currentHookNameInDev = "useReducer";
+    mountHookTypesDev();
+    var prevDispatcher = ReactCurrentDispatcher$1.current;
+    // 将hooks切换到warning形态, 如果在这此hook调用期间调用了其他内置hook, 则会报警告
+    ReactCurrentDispatcher$1.current = InvalidNestedHooksDispatcherOnMountInDEV;
+
+    try {
+      return mountReducer(reducer, initialArg, init);
+    } finally {
+      ReactCurrentDispatcher$1.current = prevDispatcher;
+    }
+  },
+  useState: function (initialState) {
+    currentHookNameInDev = "useState";
+    mountHookTypesDev();
+    var prevDispatcher = ReactCurrentDispatcher$1.current;
+    // 同上
+    ReactCurrentDispatcher$1.current = InvalidNestedHooksDispatcherOnMountInDEV;
+
+    try {
+      return mountState(initialState);
+    } finally {
+      ReactCurrentDispatcher$1.current = prevDispatcher;
+    }
+  },
+  useCallback: function (callback, deps) {
+    currentHookNameInDev = "useCallback";
+    mountHookTypesDev();
+    // 这里会校验依赖只能是undefined、null、array中的一种
+    checkDepsAreArrayDev(deps);
+    return mountCallback(callback, deps);
+  },
+  useMemo: function (create, deps) {
+    currentHookNameInDev = "useMemo";
+    mountHookTypesDev();
+    checkDepsAreArrayDev(deps);
+    var prevDispatcher = ReactCurrentDispatcher$1.current;
+    ReactCurrentDispatcher$1.current = InvalidNestedHooksDispatcherOnMountInDEV;
+
+    try {
+      return mountMemo(create, deps);
+    } finally {
+      ReactCurrentDispatcher$1.current = prevDispatcher;
+    }
+  },
+  useRef: function (initialValue) {
+    currentHookNameInDev = "useRef";
+    mountHookTypesDev();
+    return mountRef(initialValue);
+  },
+  useContext: function (context) {
+    currentHookNameInDev = "useContext";
+    mountHookTypesDev();
+    return readContext(context);
+  },
+  useImperativeHandle: function (ref, create, deps) {
+    currentHookNameInDev = "useImperativeHandle";
+    mountHookTypesDev();
+    checkDepsAreArrayDev(deps);
+    return mountImperativeHandle(ref, create, deps);
+  },
+  useLayoutEffect: function (create, deps) {
+    currentHookNameInDev = "useLayoutEffect";
+    mountHookTypesDev();
+    checkDepsAreArrayDev(deps);
+    return mountLayoutEffect(create, deps);
+  },
+};
+```
+
+### useReducer mountReducer
+
+```ts
+function mountReducer(reducer, initialArg, init) {
+  // 创建一个Hook对象, 并且把该对象挂载到fiber.memoizedState的最后面
+  // fiber.memoizedState是一个hook组成的单链表, 保存了当前fiber的所有hook
+  // var hook = {
+  //   memoizedState: null,
+  //   baseState: null,
+  //   baseQueue: null,
+  //   queue: null,
+  //   next: null
+  // };
+  var hook = mountWorkInProgressHook();
+  var initialState;
+
+  if (init !== undefined) {
+    initialState = init(initialArg);
+  } else {
+    initialState = initialArg;
+  }
+
+  hook.memoizedState = hook.baseState = initialState;
+  var queue = {
+    pending: null, // 循环链表, pending是最后一个update, pending.next是第一个update
+    interleaved: null,
+    lanes: NoLanes,
+    dispatch: null, // 保存当前hook的dispatch函数, 也就是我们平时调dispatch返回的第二个值
+    lastRenderedReducer: reducer,
+    lastRenderedState: initialState,
+  };
+  hook.queue = queue;
+  // 调用dispatch时实际上是调用的dispatchReducerAction函数
+  var dispatch = (queue.dispatch = dispatchReducerAction.bind(
+    null,
+    currentlyRenderingFiber$1,
+    queue
+  ));
+  return [hook.memoizedState, dispatch];
+}
+```
+
+### useReducer dispatchReducerAction
+
+```ts
+function dispatchReducerAction(fiber, queue, action) {
+  // 会根据当前函数触发的上下文返回不同的lane
+  // 比如如果是通过click事件触发的, 回返回SyncLane, 则该更新任务会通过微任务队列触发
+  var lane = requestUpdateLane(fiber);
+  // 创建一个Update对象
+  var update = {
+    lane: lane,
+    action: action,
+    hasEagerState: false,
+    eagerState: null,
+    next: null,
+  };
+
+  if (isRenderPhaseUpdate(fiber)) {
+    enqueueRenderPhaseUpdate(queue, update);
+  } else {
+    // 这里相较于useState, 在设置相同状态时未避免触发rerender
+    // 将Update对象添加到queue.pending链表尾
+    enqueueUpdate$1(fiber, queue, update);
+    var eventTime = requestEventTime();
+    // 将更新任务推入调度中心(微/宏任务)
+    var root = scheduleUpdateOnFiber(fiber, lane, eventTime);
+
+    // TODO:作用是什么
+    if (root !== null) {
+      entangleTransitionUpdate(root, queue, lane);
+    }
+  }
+
+  markUpdateInDevTools(fiber, lane);
+}
+```
+
+### useState mountState
+
+```ts
+// 其实mountState和mountReducer十分相似, 可以看出useState其实相当于一个极简版的useReducer
+function mountState(initialState) {
+  // 同上
+  var hook = mountWorkInProgressHook();
+
+  if (typeof initialState === "function") {
+    // $FlowFixMe: Flow doesn't like mixed types
+    initialState = initialState();
+  }
+
+  hook.memoizedState = hook.baseState = initialState;
+  var queue = {
+    pending: null,
+    interleaved: null,
+    lanes: NoLanes,
+    dispatch: null,
+    lastRenderedReducer: basicStateReducer,
+    lastRenderedState: initialState,
+  };
+  hook.queue = queue;
+  // 调用dispatch时实际上是调用的dispatchSetState函数
+  var dispatch = (queue.dispatch = dispatchSetState.bind(
+    null,
+    currentlyRenderingFiber$1,
+    queue
+  ));
+  return [hook.memoizedState, dispatch];
+}
+```
+
+### useState dispatchSetState
+
+```ts
+function dispatchSetState(fiber, queue, action) {
+  // 同上
+  var lane = requestUpdateLane(fiber);
+  var update = {
+    lane: lane,
+    action: action,
+    hasEagerState: false,
+    eagerState: null,
+    next: null,
+  };
+
+  if (isRenderPhaseUpdate(fiber)) {
+    enqueueRenderPhaseUpdate(queue, update);
+  } else {
+    enqueueUpdate$1(fiber, queue, update);
+    var alternate = fiber.alternate;
+
+    // 这里是为了优化, 在设置相同状态时避免触发rerender
+    if (
+      fiber.lanes === NoLanes &&
+      (alternate === null || alternate.lanes === NoLanes)
+    ) {
+      // The queue is currently empty, which means we can eagerly compute the
+      // next state before entering the render phase. If the new state is the
+      // same as the current state, we may be able to bail out entirely.
+      var lastRenderedReducer = queue.lastRenderedReducer;
+
+      if (lastRenderedReducer !== null) {
+        var prevDispatcher;
+
+        {
+          prevDispatcher = ReactCurrentDispatcher$1.current;
+          ReactCurrentDispatcher$1.current =
+            InvalidNestedHooksDispatcherOnUpdateInDEV;
+        }
+
+        try {
+          var currentState = queue.lastRenderedState;
+          var eagerState = lastRenderedReducer(currentState, action);
+          // Stash the eagerly computed state, and the reducer used to compute
+          // it, on the update object. If the reducer hasn't changed by the
+          // time we enter the render phase, then the eager state can be used
+          // without calling the reducer again.
+
+          update.hasEagerState = true;
+          update.eagerState = eagerState;
+
+          if (objectIs(eagerState, currentState)) {
+            // Fast path. We can bail out without scheduling React to re-render.
+            // It's still possible that we'll need to rebase this update later,
+            // if the component re-renders for a different reason and by that
+            // time the reducer has changed.
+            return;
+          }
+        } catch (error) {
+          // Suppress the error. It will throw again in the render phase.
+        } finally {
+          {
+            ReactCurrentDispatcher$1.current = prevDispatcher;
+          }
+        }
+      }
+    }
+
+    var eventTime = requestEventTime();
+    var root = scheduleUpdateOnFiber(fiber, lane, eventTime);
+
+    if (root !== null) {
+      entangleTransitionUpdate(root, queue, lane);
+    }
+  }
+
+  markUpdateInDevTools(fiber, lane);
+}
+```
+
+### useCallback mountCallback
+
+```ts
+function mountCallback(callback, deps) {
+  // 同上
+  var hook = mountWorkInProgressHook();
+
+  var nextDeps = deps === undefined ? null : deps;
+  // 将回调和依赖组装成一个数组保存起来
+  hook.memoizedState = [callback, nextDeps];
+  return callback;
+}
+```
+
+### useMemo mountMemo
+
+```ts
+// 和useCallback的结构高度相似, 只是这里存储和返回的是回调的执行结果, 而useCallback存储和返回的是回调本身
+function mountMemo(nextCreate, deps) {
+  // 同上
+  var hook = mountWorkInProgressHook();
+  // 同上
+  var nextDeps = deps === undefined ? null : deps;
+  var nextValue = nextCreate();
+
+  hook.memoizedState = [nextValue, nextDeps];
+  return nextValue;
+}
+```
+
+### useRef mountRef
+
+```ts
+function mountRef(initialValue) {
+  // 同上
+  var hook = mountWorkInProgressHook();
+
+  {
+    var _ref2 = {
+      current: initialValue,
+    };
+    // 值会被包装到一个对象, 然后将该对象存储起来
+    hook.memoizedState = _ref2;
+    return _ref2;
+  }
+}
+```
+
+### useContext readContext
+
+```ts
+// 参数context是通过React.createContext创建的一个Context对象
+// 将用户数据保存到内部的_currentValue属性上
+function readContext(context) {
+  {
+    // This warning would fire if you read context inside a Hook like useMemo.
+    // Unlike the class check below, it's not enforced in production for perf.
+    if (isDisallowedContextReadInDEV) {
+      error(
+        "Context can only be read while React is rendering. " +
+          "In classes, you can read it in the render method or getDerivedStateFromProps. " +
+          "In function components, you can read it directly in the function body, but not " +
+          "inside Hooks like useReducer() or useMemo()."
+      );
+    }
+  }
+
+  var value = context._currentValue;
+
+  if (lastFullyObservedContext === context);
+  else {
+    // 创建contextItem对象, 该对象会缓存当前context的数据, 然后将其append到fiber.dependencies.firstContext链表尾部
+    // TODO: 暂时不清楚firstContext链表的作用
+    var contextItem = {
+      context: context,
+      memoizedValue: value,
+      next: null,
+    };
+
+    if (lastContextDependency === null) {
+      if (currentlyRenderingFiber === null) {
+        throw new Error(
+          "Context can only be read while React is rendering. " +
+            "In classes, you can read it in the render method or getDerivedStateFromProps. " +
+            "In function components, you can read it directly in the function body, but not " +
+            "inside Hooks like useReducer() or useMemo()."
+        );
+      } // This is the first dependency for this component. Create a new list.
+
+      lastContextDependency = contextItem;
+      currentlyRenderingFiber.dependencies = {
+        lanes: NoLanes,
+        firstContext: contextItem,
+      };
+    } else {
+      // Append a new context item.
+      lastContextDependency = lastContextDependency.next = contextItem;
+    }
+  }
+
+  return value;
+}
+```
+
+### useImperativeHandle mountImperativeHandle
+
+```ts
+// 只对部分信息做了保存, 具体的更新ref的操作需要在commit阶段执行
+function mountImperativeHandle(ref, create, deps) {
+  {
+    if (typeof create !== "function") {
+      error(
+        "Expected useImperativeHandle() second argument to be a function " +
+          "that creates a handle. Instead received: %s.",
+        create !== null ? typeof create : "null"
+      );
+    }
+  }
+
+  // TODO: If deps are provided, should we skip comparing the ref itself?
+  var effectDeps =
+    deps !== null && deps !== undefined ? deps.concat([ref]) : null;
+  // 会给fiber打上Update | LayoutStatic标记
+  var fiberFlags = Update;
+
+  {
+    fiberFlags |= LayoutStatic;
+  }
+
+  if ((currentlyRenderingFiber$1.mode & StrictEffectsMode) !== NoMode) {
+    fiberFlags |= MountLayoutDev;
+  }
+
+  // 将create函数以imperativeHandleEffect.bind(null, create, ref)的形式保存到effect中
+  return mountEffectImpl(
+    fiberFlags,
+    Layout,
+    imperativeHandleEffect.bind(null, create, ref),
+    effectDeps
+  );
+}
+function mountEffectImpl(fiberFlags, hookFlags, create, deps) {
+  var hook = mountWorkInProgressHook();
+  var nextDeps = deps === undefined ? null : deps;
+  currentlyRenderingFiber$1.flags |= fiberFlags;
+  // effect会保存到hook.memoizedState, effect会打上HasEffect | hookFlags标记
+  hook.memoizedState = pushEffect(
+    HasEffect | hookFlags,
+    create,
+    undefined,
+    nextDeps
+  );
+}
+function pushEffect(tag, create, destroy, deps) {
+  var effect = {
+    tag: tag,
+    create: create,
+    destroy: destroy,
+    deps: deps,
+    // 这里会构成环
+    next: null,
+  };
+  var componentUpdateQueue = currentlyRenderingFiber$1.updateQueue;
+
+  // 将effect append到updateQueue的lastEffect链表中
+  if (componentUpdateQueue === null) {
+    componentUpdateQueue = createFunctionComponentUpdateQueue();
+    currentlyRenderingFiber$1.updateQueue = componentUpdateQueue;
+    componentUpdateQueue.lastEffect = effect.next = effect;
+  } else {
+    var lastEffect = componentUpdateQueue.lastEffect;
+
+    if (lastEffect === null) {
+      componentUpdateQueue.lastEffect = effect.next = effect;
+    } else {
+      var firstEffect = lastEffect.next;
+      lastEffect.next = effect;
+      effect.next = firstEffect;
+      componentUpdateQueue.lastEffect = effect;
+    }
+  }
+
+  return effect;
+}
+function imperativeHandleEffect(create, ref) {
+  if (typeof ref === "function") {
+    var refCallback = ref;
+
+    var _inst = create();
+
+    refCallback(_inst);
+    return function () {
+      refCallback(null);
+    };
+  } else if (ref !== null && ref !== undefined) {
+    var refObject = ref;
+
+    {
+      if (!refObject.hasOwnProperty("current")) {
+        error(
+          "Expected useImperativeHandle() first argument to either be a " +
+            "ref callback or React.createRef() object. Instead received: %s.",
+          "an object with keys {" + Object.keys(refObject).join(", ") + "}"
+        );
+      }
+    }
+
+    var _inst2 = create();
+
+    refObject.current = _inst2;
+    return function () {
+      refObject.current = null;
+    };
+  }
+}
+```
+
+### useLayoutEffect mountLayoutEffect
+
+```ts
+// 其实现和mountImperativeHandle几乎一样, 只是回调函数未做任何处理
+function mountLayoutEffect(create, deps) {
+  var fiberFlags = Update;
+
+  {
+    fiberFlags |= LayoutStatic;
+  }
+
+  if ((currentlyRenderingFiber$1.mode & StrictEffectsMode) !== NoMode) {
+    fiberFlags |= MountLayoutDev;
+  }
+
+  return mountEffectImpl(fiberFlags, Layout, create, deps);
+}
+```
+
+## HooksDispatcherOnUpdateInDEV
+
+```ts
+var HooksDispatcherOnUpdateInDEV = {
+  useReducer: function (reducer, initialArg, init) {
+    currentHookNameInDev = "useReducer";
+    // 校验当前hook和上次渲染时相同index位置的hook是否发生顺序变化
+    // 如果我们有将内置的hook放到条件语句中执行, 这里会报警告
+    updateHookTypesDev();
+    var prevDispatcher = ReactCurrentDispatcher$1.current;
+    ReactCurrentDispatcher$1.current =
+      InvalidNestedHooksDispatcherOnUpdateInDEV;
+
+    try {
+      return updateReducer(reducer, initialArg, init);
+    } finally {
+      ReactCurrentDispatcher$1.current = prevDispatcher;
+    }
+  },
+  useState: function (initialState) {
+    currentHookNameInDev = "useState";
+    updateHookTypesDev();
+    var prevDispatcher = ReactCurrentDispatcher$1.current;
+    ReactCurrentDispatcher$1.current =
+      InvalidNestedHooksDispatcherOnUpdateInDEV;
+
+    try {
+      return updateState(initialState);
+    } finally {
+      ReactCurrentDispatcher$1.current = prevDispatcher;
+    }
+  },
+  useCallback: function (callback, deps) {
+    currentHookNameInDev = "useCallback";
+    updateHookTypesDev();
+    return updateCallback(callback, deps);
+  },
+  useMemo: function (create, deps) {
+    currentHookNameInDev = "useMemo";
+    updateHookTypesDev();
+    // 不允许嵌套
+    var prevDispatcher = ReactCurrentDispatcher$1.current;
+    ReactCurrentDispatcher$1.current =
+      InvalidNestedHooksDispatcherOnUpdateInDEV;
+
+    try {
+      return updateMemo(create, deps);
+    } finally {
+      ReactCurrentDispatcher$1.current = prevDispatcher;
+    }
+  },
+  useRef: function (initialValue) {
+    currentHookNameInDev = "useRef";
+    updateHookTypesDev();
+    return updateRef();
+  },
+  // 同mount阶段的useContext几乎没区别
+  useContext: function (context) {
+    currentHookNameInDev = "useContext";
+    updateHookTypesDev();
+    return readContext(context);
+  },
+  useImperativeHandle: function (ref, create, deps) {
+    currentHookNameInDev = "useImperativeHandle";
+    updateHookTypesDev();
+    return updateImperativeHandle(ref, create, deps);
+  },
+  useLayoutEffect: function (create, deps) {
+    currentHookNameInDev = "useLayoutEffect";
+    updateHookTypesDev();
+    return updateLayoutEffect(create, deps);
+  },
+};
+```
+
+### useReducer updateReducer
+
+```ts
+// 其实updateReducer的工作同processUpdateQueue差不多, 只是处理对象由updateQueue变为了hook
+// 所以这里只会做些简单分析
+function updateReducer(reducer, initialArg, init) {
+  // 获取当前Hook对象, 依次取currentlyRenderingFiber$1.memoizedState链表上面的节点即可
+  var hook = updateWorkInProgressHook();
+  var queue = hook.queue;
+
+  if (queue === null) {
+    throw new Error(
+      "Should have a queue. This is likely a bug in React. Please file an issue."
+    );
+  }
+
+  queue.lastRenderedReducer = reducer;
+  var current = currentHook;
+
+  // The last rebase update that is NOT part of the base state.
+  var baseQueue = current.baseQueue;
+  // The last pending update that hasn't been processed yet.
+  var pendingQueue = queue.pending;
+  if (pendingQueue !== null) {
+    // We have new updates that haven't been processed yet.
+    // We'll add them to the base queue.
+    // 恢复之前保存的Update, 并将新的Update加入到链表尾
+    if (baseQueue !== null) {
+      // Merge the pending queue and the base queue.
+      var baseFirst = baseQueue.next;
+      var pendingFirst = pendingQueue.next;
+      baseQueue.next = pendingFirst;
+      pendingQueue.next = baseFirst;
+    }
+
+    {
+      if (current.baseQueue !== baseQueue) {
+        // Internal invariant that should never happen, but feasibly could in
+        // the future if we implement resuming, or some form of that.
+        error(
+          "Internal error: Expected work-in-progress queue to be a clone. " +
+            "This is a bug in React."
+        );
+      }
+    }
+
+    // 将Update同步到currentHook, 防止中断导致Update丢失
+    current.baseQueue = baseQueue = pendingQueue;
+    queue.pending = null;
+  }
+
+  // 处理Update, 生成新的state和newBaseQueue
+  if (baseQueue !== null) {
+    // We have a queue to process.
+    var first = baseQueue.next;
+    var newState = current.baseState;
+    var newBaseState = null;
+    var newBaseQueueFirst = null;
+    var newBaseQueueLast = null;
+    var update = first;
+
+    do {
+      var updateLane = update.lane;
+
+      if (!isSubsetOfLanes(renderLanes, updateLane)) {
+        // Priority is insufficient. Skip this update. If this is the first
+        // skipped update, the previous update/state is the new base
+        // update/state.
+        var clone = {
+          lane: updateLane,
+          action: update.action,
+          hasEagerState: update.hasEagerState,
+          eagerState: update.eagerState,
+          next: null,
+        };
+
+        if (newBaseQueueLast === null) {
+          newBaseQueueFirst = newBaseQueueLast = clone;
+          newBaseState = newState;
+        } else {
+          newBaseQueueLast = newBaseQueueLast.next = clone;
+        }
+
+        // Update the remaining priority in the queue.
+        // TODO: Don't need to accumulate this. Instead, we can remove
+        // renderLanes from the original lanes.
+        currentlyRenderingFiber$1.lanes = mergeLanes(
+          currentlyRenderingFiber$1.lanes,
+          updateLane
+        );
+        markSkippedUpdateLanes(updateLane);
+      } else {
+        // This update does have sufficient priority.
+        if (newBaseQueueLast !== null) {
+          var _clone = {
+            // This update is going to be committed so we never want uncommit
+            // it. Using NoLane works because 0 is a subset of all bitmasks, so
+            // this will never be skipped by the check above.
+            lane: NoLane,
+            action: update.action,
+            hasEagerState: update.hasEagerState,
+            eagerState: update.eagerState,
+            next: null,
+          };
+          newBaseQueueLast = newBaseQueueLast.next = _clone;
+        } // Process this update.
+
+        if (update.hasEagerState) {
+          // If this update is a state update (not a reducer) and was processed eagerly,
+          // we can use the eagerly computed state
+          newState = update.eagerState;
+        } else {
+          var action = update.action;
+          newState = reducer(newState, action);
+        }
+      }
+
+      update = update.next;
+    } while (update !== null && update !== first);
+
+    if (newBaseQueueLast === null) {
+      newBaseState = newState;
+    } else {
+      newBaseQueueLast.next = newBaseQueueFirst;
+    }
+
+    // Mark that the fiber performed work, but only if the new state is
+    // different from the current state.
+    if (!objectIs(newState, hook.memoizedState)) {
+      markWorkInProgressReceivedUpdate();
+    }
+
+    hook.memoizedState = newState;
+    hook.baseState = newBaseState;
+    hook.baseQueue = newBaseQueueLast;
+    queue.lastRenderedState = newState;
+  }
+
+  // Interleaved updates are stored on a separate queue. We aren't going to
+  // process them during this render, but we do need to track which lanes
+  // are remaining.
+  var lastInterleaved = queue.interleaved;
+
+  if (lastInterleaved !== null) {
+    var interleaved = lastInterleaved;
+
+    do {
+      var interleavedLane = interleaved.lane;
+      currentlyRenderingFiber$1.lanes = mergeLanes(
+        currentlyRenderingFiber$1.lanes,
+        interleavedLane
+      );
+      markSkippedUpdateLanes(interleavedLane);
+      interleaved = interleaved.next;
+    } while (interleaved !== lastInterleaved);
+  } else if (baseQueue === null) {
+    // `queue.lanes` is used for entangling transitions. We can set it back to
+    // zero once the queue is empty.
+    queue.lanes = NoLanes;
+  }
+
+  var dispatch = queue.dispatch;
+  // TODO:为什么不是返回hook.baseState
+  return [hook.memoizedState, dispatch];
+}
+```
+
+### useState updateState
+
+```ts
+function updateState(initialState) {
+  // 所以update阶段, 执行useState相当于执行useReducer
+  return updateReducer(basicStateReducer);
+}
+```
+
+### updateCallback updateCallback
+
+```ts
+function updateCallback(callback, deps) {
+  // 同上
+  var hook = updateWorkInProgressHook();
+  var nextDeps = deps === undefined ? null : deps;
+  var prevState = hook.memoizedState;
+
+  if (prevState !== null) {
+    // useCallback(() => {})这种用法不会走依赖比较逻辑
+    if (nextDeps !== null) {
+      var prevDeps = prevState[1];
+      // 比较两次依赖项是否相同, 如果相同则返回之前的回调, 否则返回新的回调
+      // 依赖比较逻辑:
+      // 1. length是否相同, 不同直接返回false
+      // 2. 遍历依赖, 依次比较(Object.is)nextDeps[i]和prevDeps[i], 不相同则返回false, 若都相同则返回true
+      if (areHookInputsEqual(nextDeps, prevDeps)) {
+        return prevState[0];
+      }
+    }
+  }
+
+  hook.memoizedState = [callback, nextDeps];
+  return callback;
+}
+```
+
+### useMemo updateMemo
+
+```ts
+function updateMemo(nextCreate, deps) {
+  // 同上
+  var hook = updateWorkInProgressHook();
+  var nextDeps = deps === undefined ? null : deps;
+  var prevState = hook.memoizedState;
+
+  if (prevState !== null) {
+    // 同上
+    if (nextDeps !== null) {
+      var prevDeps = prevState[1];
+
+      if (areHookInputsEqual(nextDeps, prevDeps)) {
+        return prevState[0];
+      }
+    }
+  }
+
+  var nextValue = nextCreate();
+  hook.memoizedState = [nextValue, nextDeps];
+  return nextValue;
+}
+```
+
+### useRef updateRef
+
+```ts
+function updateRef() {
+  var hook = updateWorkInProgressHook();
+
+  // 直接返回之前存储的对象, 说明该对象在rerender时不会更新
+  return hook.memoizedState;
+}
+```
+
+### useImperativeHandle updateImperativeHandle
+
+```ts
+function updateImperativeHandle(ref, create, deps) {
+  {
+    if (typeof create !== "function") {
+      error(
+        "Expected useImperativeHandle() second argument to be a function " +
+          "that creates a handle. Instead received: %s.",
+        create !== null ? typeof create : "null"
+      );
+    }
+  } // TODO: If deps are provided, should we skip comparing the ref itself?
+
+  var effectDeps =
+    deps !== null && deps !== undefined ? deps.concat([ref]) : null;
+  // 同mount阶段大致相同, 但是会比较依赖, 如果依赖没有发生变化则不会为effect打HasEffect标记, 也不会为fiber打上任何标记
+  return updateEffectImpl(
+    Update,
+    Layout,
+    imperativeHandleEffect.bind(null, create, ref),
+    effectDeps
+  );
+}
+```
+
+### useLayoutEffect updateLayoutEffect
+
+```ts
+// 同updateImperativeHandle
+function updateLayoutEffect(create, deps) {
+  return updateEffectImpl(Update, Layout, create, deps);
+}
+```
