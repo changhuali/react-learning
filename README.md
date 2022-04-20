@@ -1632,6 +1632,12 @@ var HooksDispatcherOnMountInDEV = {
     checkDepsAreArrayDev(deps);
     return mountLayoutEffect(create, deps);
   },
+  useEffect: function (create, deps) {
+    currentHookNameInDev = "useEffect";
+    mountHookTypesDev();
+    checkDepsAreArrayDev(deps);
+    return mountEffect(create, deps);
+  },
 };
 ```
 
@@ -2061,6 +2067,25 @@ function mountLayoutEffect(create, deps) {
 }
 ```
 
+### useEffect mountEffect
+
+```ts
+// 同mountLayoutEffect, 只是fiber标记换成了Passive | PassiveStatic, hook标记换成了Passive$1
+function mountEffect(create, deps) {
+  // 先跳过严格模式
+  if ((currentlyRenderingFiber$1.mode & StrictEffectsMode) !== NoMode) {
+    return mountEffectImpl(
+      MountPassiveDev | Passive | PassiveStatic,
+      Passive$1,
+      create,
+      deps
+    );
+  } else {
+    return mountEffectImpl(Passive | PassiveStatic, Passive$1, create, deps);
+  }
+}
+```
+
 ## HooksDispatcherOnUpdateInDEV
 
 ```ts
@@ -2132,6 +2157,11 @@ var HooksDispatcherOnUpdateInDEV = {
     currentHookNameInDev = "useLayoutEffect";
     updateHookTypesDev();
     return updateLayoutEffect(create, deps);
+  },
+  useEffect: function (create, deps) {
+    currentHookNameInDev = "useEffect";
+    updateHookTypesDev();
+    return updateEffect(create, deps);
   },
 };
 ```
@@ -2406,8 +2436,16 @@ function updateImperativeHandle(ref, create, deps) {
 ### useLayoutEffect updateLayoutEffect
 
 ```ts
-// 同updateImperativeHandle
 function updateLayoutEffect(create, deps) {
   return updateEffectImpl(Update, Layout, create, deps);
+}
+```
+
+### useEffect updateEffect
+
+```ts
+// 同updateLayoutEffect, 只是fiber标记换成了Passive, hook标记换成了Passive$1
+function updateEffect(create, deps) {
+  return updateEffectImpl(Passive, Passive$1, create, deps);
 }
 ```
