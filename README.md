@@ -1204,6 +1204,7 @@ var HooksDispatcherOnMountInDEV = {
     currentHookNameInDev = "useReducer";
     mountHookTypesDev();
     var prevDispatcher = ReactCurrentDispatcher$1.current;
+    // 将hooks切换到warning形态, 如果在这此hook调用期间调用了其他内置hook, 则会报警告
     ReactCurrentDispatcher$1.current = InvalidNestedHooksDispatcherOnMountInDEV;
 
     try {
@@ -1216,7 +1217,7 @@ var HooksDispatcherOnMountInDEV = {
     currentHookNameInDev = "useState";
     mountHookTypesDev();
     var prevDispatcher = ReactCurrentDispatcher$1.current;
-    // 将hooks切换到warning形态, 如果在这此hook调用期间调用了其他内置hook, 则会报警告
+    // 同上
     ReactCurrentDispatcher$1.current = InvalidNestedHooksDispatcherOnMountInDEV;
 
     try {
@@ -1231,6 +1232,19 @@ var HooksDispatcherOnMountInDEV = {
     // 这里会校验依赖只能是undefined、null、array中的一种
     checkDepsAreArrayDev(deps);
     return mountCallback(callback, deps);
+  },
+  useMemo: function (create, deps) {
+    currentHookNameInDev = "useMemo";
+    mountHookTypesDev();
+    checkDepsAreArrayDev(deps);
+    var prevDispatcher = ReactCurrentDispatcher$1.current;
+    ReactCurrentDispatcher$1.current = InvalidNestedHooksDispatcherOnMountInDEV;
+
+    try {
+      return mountMemo(create, deps);
+    } finally {
+      ReactCurrentDispatcher$1.current = prevDispatcher;
+    }
   },
   useRef: function (initialValue) {
     currentHookNameInDev = "useRef";
@@ -1444,6 +1458,22 @@ function mountCallback(callback, deps) {
 }
 ```
 
+- useMemo mountMemo
+
+```ts
+// 和useCallback的结构高度相似, 只是这里存储和返回的是回调的执行结果, 而useCallback存储和返回的是回调本身
+function mountMemo(nextCreate, deps) {
+  // 同上
+  var hook = mountWorkInProgressHook();
+  // 同上
+  var nextDeps = deps === undefined ? null : deps;
+  var nextValue = nextCreate();
+
+  hook.memoizedState = [nextValue, nextDeps];
+  return nextValue;
+}
+```
+
 - useRef mountRef
 
 ```ts
@@ -1496,6 +1526,20 @@ var HooksDispatcherOnUpdateInDEV = {
     currentHookNameInDev = "useCallback";
     updateHookTypesDev();
     return updateCallback(callback, deps);
+  },
+  useMemo: function (create, deps) {
+    currentHookNameInDev = "useMemo";
+    updateHookTypesDev();
+    // 不允许嵌套
+    var prevDispatcher = ReactCurrentDispatcher$1.current;
+    ReactCurrentDispatcher$1.current =
+      InvalidNestedHooksDispatcherOnUpdateInDEV;
+
+    try {
+      return updateMemo(create, deps);
+    } finally {
+      ReactCurrentDispatcher$1.current = prevDispatcher;
+    }
   },
   useRef: function (initialValue) {
     currentHookNameInDev = "useRef";
@@ -1706,6 +1750,32 @@ function updateCallback(callback, deps) {
 
   hook.memoizedState = [callback, nextDeps];
   return callback;
+}
+```
+
+- useMemo updateMemo
+
+```ts
+function updateMemo(nextCreate, deps) {
+  // 同上
+  var hook = updateWorkInProgressHook();
+  var nextDeps = deps === undefined ? null : deps;
+  var prevState = hook.memoizedState;
+
+  if (prevState !== null) {
+    // 同上
+    if (nextDeps !== null) {
+      var prevDeps = prevState[1];
+
+      if (areHookInputsEqual(nextDeps, prevDeps)) {
+        return prevState[0];
+      }
+    }
+  }
+
+  var nextValue = nextCreate();
+  hook.memoizedState = [nextValue, nextDeps];
+  return nextValue;
 }
 ```
 
