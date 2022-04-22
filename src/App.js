@@ -38,7 +38,8 @@ function App() {
       {count}
       <button
         ref={ref}
-        onClick={() => {
+        onClick={(evt) => {
+          console.log(evt)
           dispatch({
             type: "inc",
           });

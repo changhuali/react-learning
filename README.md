@@ -2765,6 +2765,16 @@ function updateEffect(create, deps) {
 
 # 合成事件
 
+`React`会在`createRoot`时将所有在`allNativeEvents`列表中的事件往`container`上面注册一遍, 这些事件的`listener`是通过`createEventListenerWrapperWithPriority`创建的, 这个函数会根据事件名创建不同`listener`, 并且这些`listener`会在执行时通过调用`setCurrentUpdatePriority`改变全局变量`currentUpdatePriority`的值, 从而完成了上下文`优先级`的设置, 这就是为什么`React`可以根据事件类型调度不同优先级的任务。
+
+`listener`在执行时会通过`event对象`拿到对应的`DOM节点`, 然后通过`DOM节点`找到对应的`Fiber`(在创建DOM节点时会通过一个key), 
+
+## 可冒泡事件
+
+让事件冒泡到`container节点`, 触发之前注册的`listener`即可
+
+## 不可冒泡事件
+
 # 调度
 
 # 热更新
@@ -2790,4 +2800,4 @@ function updateEffect(create, deps) {
 | 132945678  | 39                   | 245678                |
 | 567123489  | 567                  | 1234                  |
 
-可见`React diff`的结果相比理想结果还是有一定差距, 特别是节点在被倒序排列时, 但是其时间复杂度为 O(n), 如果利用LCS求出理想值, 其最低时间复杂度也为 O(n log n)
+可见`React diff`的结果相比理想结果还是有一定差距, 特别是节点在被倒序排列时, 但是其时间复杂度为 O(n), 如果利用 LCS 求出理想值, 其最低时间复杂度也为 O(n log n)
