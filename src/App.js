@@ -1,46 +1,66 @@
 import "./App.css";
-import { useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, StrictMode } from "react";
 
-function Expensive() {
-  const list = [...new Array(10)];
-  console.log("expensive render", list.length);
-  return (
-    <div>
-      {list.map((item, index) => {
-        return <p key={index}>{index}</p>;
-      })}
-    </div>
-  );
+function GrandChild({ count }) {
+  // useEffect(() => {
+  //   console.log("GrandChild mount");
+  //   return () => {
+  //     console.log("GrandChild unmount");
+  //   };
+  // });
+  return <div>{count}</div>;
 }
 
+function Child({ count }) {
+  // useEffect(() => {
+  //   console.log("Child mount");
+  //   return () => {
+  //     console.log("Child unmount");
+  //   };
+  // });
+  return <GrandChild count={count} />;
+}
+
+const total = 1000;
 function App() {
+  const ref = useRef();
   const [count, dispatch] = useReducer((state, action) => {
     switch (action.type) {
       case "inc":
-        return action.data;
+        return ++state;
       default:
         throw new Error();
     }
   }, 1);
-  const ref = useRef();
-
-  console.log("=========render");
 
   return (
-    <div ref={ref}>
+    <StrictMode>
       {count}
       <button
+        ref={ref}
         onClick={() => {
           dispatch({
             type: "inc",
-            data: 1,
           });
         }}
       >
         点我试一试
       </button>
-      <Expensive />
-    </div>
+      <div>
+        {count & 1
+          ? [...new Array(total).fill(null).map((_, index) => index)].map(
+              (item) => {
+                return <Child key={item} count={item} />;
+              }
+            )
+          : [
+              total - 1,
+              ...new Array(total - 1).fill(null).map((_, index) => index),
+            ].map((item) => {
+              return <Child key={item} count={item} />;
+            })}
+      </div>
+    </StrictMode>
   );
 }
 

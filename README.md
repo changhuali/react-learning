@@ -1,4 +1,4 @@
-# Fiber 架构
+# 架构
 
 - 背景
   老的架构中，多个渲染任务没有优先级的概念，使得部分紧急的渲染任务可能会被其他不那么紧急的渲染任务阻塞，从而导致用户交互卡顿。
@@ -1558,6 +1558,319 @@ function bubbleProperties(completedWork) {
 
 # commit 阶段
 
+`performConcurrentWorkOnRoot`执行完成后会执行`commitRoot`(先忽略一些特殊情况), 标志着`commit阶段`的开始。
+
+## commitRoot
+
+其底层实现为`commitRootImpl`
+
+### commitRootImpl
+
+```ts
+function commitRootImpl(root, recoverableErrors, renderPriorityLevel) {
+  // 这里首次render时rootWithPendingPassiveEffects为null, 先跳过
+  do {
+    // `flushPassiveEffects` will call `flushSyncUpdateQueue` at the end, which
+    // means `flushPassiveEffects` will sometimes result in additional
+    // passive effects. So we need to keep flushing in a loop until there are
+    // no more pending effects.
+    // TODO: Might be better if `flushPassiveEffects` did not automatically
+    // flush synchronous work at the end, to avoid factoring hazards like this.
+    flushPassiveEffects();
+  } while (rootWithPendingPassiveEffects !== null);
+
+  // 打印一些warnings
+  flushRenderPhaseStrictModeWarningsInDEV();
+
+  if ((executionContext & (RenderContext | CommitContext)) !== NoContext) {
+    throw new Error("Should not already be working.");
+  }
+
+  var finishedWork = root.finishedWork;
+  var lanes = root.finishedLanes;
+
+  {
+    markCommitStarted(lanes);
+  }
+
+  if (finishedWork === null) {
+    {
+      markCommitStopped();
+    }
+
+    return null;
+  } else {
+    {
+      if (lanes === NoLanes) {
+        error(
+          "root.finishedLanes should not be empty during a commit. This is a " +
+            "bug in React."
+        );
+      }
+    }
+  }
+
+  root.finishedWork = null;
+  root.finishedLanes = NoLanes;
+
+  if (finishedWork === root.current) {
+    throw new Error(
+      "Cannot commit the same tree as before. This error is likely caused by " +
+        "a bug in React. Please file an issue."
+    );
+  }
+
+  // commitRoot never returns a continuation; it always finishes synchronously.
+  // So we can clear these now to allow a new callback to be scheduled.
+  root.callbackNode = null;
+  root.callbackPriority = NoLane;
+
+  // Update the first and last pending times on this root. The new first
+  // pending time is whatever is left on the root fiber.
+  var remainingLanes = mergeLanes(finishedWork.lanes, finishedWork.childLanes);
+  markRootFinished(root, remainingLanes);
+
+  if (root === workInProgressRoot) {
+    // We can reset these now that they are finished.
+    workInProgressRoot = null;
+    workInProgress = null;
+    workInProgressRootRenderLanes = NoLanes;
+  }
+
+  // If there are pending passive effects, schedule a callback to process them.
+  // Do this as early as possible, so it is queued before anything else that
+  // might get scheduled in the commit phase. (See #16714.)
+  // TODO: Delete all other places that schedule the passive effect callback
+  // They're redundant.
+  if (
+    (finishedWork.subtreeFlags & PassiveMask) !== NoFlags ||
+    (finishedWork.flags & PassiveMask) !== NoFlags
+  ) {
+    if (!rootDoesHavePassiveEffects) {
+      rootDoesHavePassiveEffects = true;
+      pendingPassiveEffectsRemainingLanes = remainingLanes;
+      // 将flushPassiveEffects加入到宏任务队列
+      scheduleCallback$2(NormalPriority, function () {
+        // 用于执行unmount/mount生命周期, 函数式组件的useEffect的回调和其上次的销毁函数也会在此时执行
+        flushPassiveEffects();
+
+        // This render triggered passive effects: release the root cache pool
+        // *after* passive effects fire to avoid freeing a cache pool that may
+        // be referenced by a node in the tree (HostRoot, Cache boundary etc)
+        return null;
+      });
+    }
+  }
+
+  // Check if there are any effects in the whole tree.
+  // TODO: This is left over from the effect list implementation, where we had
+  // to check for the existence of `firstEffect` to satisfy Flow. I think the
+  // only other reason this optimization exists is because it affects profiling.
+  // Reconsider whether this is necessary.
+  var subtreeHasEffects =
+    (finishedWork.subtreeFlags &
+      (BeforeMutationMask | MutationMask | LayoutMask | PassiveMask)) !==
+    NoFlags;
+  var rootHasEffect =
+    (finishedWork.flags &
+      (BeforeMutationMask | MutationMask | LayoutMask | PassiveMask)) !==
+    NoFlags;
+
+  if (subtreeHasEffects || rootHasEffect) {
+    var prevTransition = ReactCurrentBatchConfig$3.transition;
+    ReactCurrentBatchConfig$3.transition = null;
+    var previousPriority = getCurrentUpdatePriority();
+    setCurrentUpdatePriority(DiscreteEventPriority);
+    var prevExecutionContext = executionContext;
+    executionContext |= CommitContext;
+
+    // Reset this to null before calling lifecycles
+    ReactCurrentOwner$2.current = null;
+
+    // The commit phase is broken into several sub-phases. We do a separate pass
+    // of the effect list for each phase: all mutation effects come before all
+    // layout effects, and so on.
+    // The first phase a "before mutation" phase. We use this phase to read the
+    // state of the host tree right before we mutate it. This is where
+    // getSnapshotBeforeUpdate is called.
+
+    // 处理snapshot, 顺序为DFS, 所以子组件的getSnapshotBeforeUpdate会先于父组件的getSnapshotBeforeUpdate执行
+    var shouldFireAfterActiveInstanceBlur = commitBeforeMutationEffects(
+      root,
+      finishedWork
+    );
+
+    {
+      // Mark the current commit time to be shared by all Profilers in this
+      // batch. This enables them to be grouped later.
+      recordCommitTime();
+    }
+
+    // 处理DOM节点的删除、新增、更新逻辑
+    // 后面会详细分析
+    commitMutationEffects(root, finishedWork, lanes);
+    resetAfterCommit(root.containerInfo);
+
+    // The work-in-progress tree is now the current tree. This must come after
+    // the mutation phase, so that the previous tree is still current during
+    // componentWillUnmount, but before the layout phase, so that the finished
+    // work is current during componentDidMount/Update.
+    root.current = finishedWork;
+
+    // The next phase is the layout phase, where we call effects that read
+    {
+      markLayoutEffectsStarted(lanes);
+    }
+
+    // 执行组件的useLayoutEffect的回调, 并将返回值赋值给相应effect的destroy属性
+    // 后面会详细分析
+    commitLayoutEffects(finishedWork, root, lanes);
+    {
+      markLayoutEffectsStopped();
+    }
+
+    // opportunity to paint.
+    // 现阶段是个空函数, 应该是还未实现
+    requestPaint();
+    executionContext = prevExecutionContext;
+
+    // Reset the priority to the previous non-sync value.
+    setCurrentUpdatePriority(previousPriority);
+    ReactCurrentBatchConfig$3.transition = prevTransition;
+  } else {
+    // No effects.
+    root.current = finishedWork;
+
+    // Measure these anyway so the flamegraph explicitly shows that there were
+    // no effects.
+    // TODO: Maybe there's a better way to report this.
+    {
+      recordCommitTime();
+    }
+  }
+
+  var rootDidHavePassiveEffects = rootDoesHavePassiveEffects;
+
+  if (rootDoesHavePassiveEffects) {
+    // This commit has passive effects. Stash a reference to them. But don't
+    // schedule a callback until after flushing layout work.
+    rootDoesHavePassiveEffects = false;
+    rootWithPendingPassiveEffects = root;
+    pendingPassiveEffectsLanes = lanes;
+  } else {
+    // There were no passive effects, so we can immediately release the cache
+    // pool for this render.
+    releaseRootPooledCache(root, remainingLanes);
+  }
+
+  // Read this again, since an effect might have updated it
+  remainingLanes = root.pendingLanes;
+
+  // Check if there's remaining work on this root
+  // TODO: This is part of the `componentDidCatch` implementation. Its purpose
+  // is to detect whether something might have called setState inside
+  // `componentDidCatch`. The mechanism is known to be flawed because `setState`
+  // inside `componentDidCatch` is itself flawed — that's why we recommend
+  // `getDerivedStateFromError` instead. However, it could be improved by
+  // checking if remainingLanes includes Sync work, instead of whether there's
+  // any work remaining at all (which would also include stuff like Suspense
+  // retries or transitions). It's been like this for a while, though, so fixing
+  // it probably isn't that urgent.
+  if (remainingLanes === NoLanes) {
+    // If there's no remaining work, we can clear the set of already failed
+    // error boundaries.
+    legacyErrorBoundariesThatAlreadyFailed = null;
+  }
+
+  {
+    if (!rootDidHavePassiveEffects) {
+      // 内部执行了所有effect的回调函数和销毁函数, 是同步执行的
+      commitDoubleInvokeEffectsInDEV(root.current, false);
+    }
+  }
+
+  // devtools相关
+  onCommitRoot(finishedWork.stateNode, renderPriorityLevel);
+
+  {
+    if (isDevToolsPresent) {
+      root.memoizedUpdaters.clear();
+    }
+  }
+  {
+    onCommitRoot$1();
+  }
+
+  // Always call this before exiting `commitRoot`, to ensure that any
+  // additional work on this root is scheduled.
+  // TODO:什么时候会有待处理任务
+  ensureRootIsScheduled(root, now());
+  if (recoverableErrors !== null) {
+    // There were errors during this render, but recovered from them without
+    // needing to surface it to the UI. We log them here.
+    var onRecoverableError = root.onRecoverableError;
+
+    for (var i = 0; i < recoverableErrors.length; i++) {
+      var recoverableError = recoverableErrors[i];
+      onRecoverableError(recoverableError);
+    }
+  }
+
+  if (hasUncaughtError) {
+    hasUncaughtError = false;
+    var error$1 = firstUncaughtError;
+    firstUncaughtError = null;
+    throw error$1;
+  }
+
+  // If the passive effects are the result of a discrete render, flush them
+  // synchronously at the end of the current task so that the result is
+  // immediately observable. Otherwise, we assume that they are not
+  // order-dependent and do not need to be observed by external systems, so we
+  // can wait until after paint.
+  // TODO: We can optimize this by not scheduling the callback earlier. Since we
+  // currently schedule the callback in multiple places, will wait until those
+  // are consolidated.
+
+  // so, 通过离散事件触发的更新会同步处理其useEffect？
+  if (
+    includesSomeLane(pendingPassiveEffectsLanes, SyncLane) &&
+    root.tag !== LegacyRoot
+  ) {
+    flushPassiveEffects();
+  }
+
+  // Read this again, since a passive effect might have updated it
+  remainingLanes = root.pendingLanes;
+
+  if (includesSomeLane(remainingLanes, SyncLane)) {
+    {
+      markNestedUpdateScheduled();
+    }
+
+    // Count the number of times the root synchronously re-renders without
+    // finishing. If there are too many, it indicates an infinite update loop.
+    if (root === rootWithNestedUpdates) {
+      nestedUpdateCount++;
+    } else {
+      nestedUpdateCount = 0;
+      rootWithNestedUpdates = root;
+    }
+  } else {
+    nestedUpdateCount = 0;
+  }
+
+  // If layout work was scheduled, flush it now.
+  flushSyncCallbacks();
+
+  {
+    markCommitStopped();
+  }
+
+  return null;
+}
+```
+
 # hooks
 
 ## HooksDispatcherOnMountInDEV
@@ -2449,3 +2762,32 @@ function updateEffect(create, deps) {
   return updateEffectImpl(Passive, Passive$1, create, deps);
 }
 ```
+
+# 合成事件
+
+# 调度
+
+# 热更新
+
+# 服务端渲染
+
+# 调试模式
+
+# diff 优化
+
+原顺序
+
+123456789
+
+| 更新后顺序 | 理想 diff 移动的节点 | React diff 移动的节点 |
+| ---------- | -------------------- | --------------------- |
+| 987654321  | 87654321             | 87654321              |
+| 123456789  |                      |                       |
+| 912345678  | 9                    | 12345678              |
+| 152348679  | 58                   | 23467                 |
+| 156789234  | 234                  | 234                   |
+| 143265987  | 4367(很多解)         | 1469                  |
+| 132945678  | 39                   | 245678                |
+| 567123489  | 567                  | 1234                  |
+
+可见`React diff`的结果相比理想结果还是有一定差距, 特别是节点在被倒序排列时, 但是其时间复杂度为 O(n), 如果利用LCS求出理想值, 其最低时间复杂度也为 O(n log n)
