@@ -36,17 +36,8 @@ function App() {
   return (
     <StrictMode>
       {count}
-      <button
-        ref={ref}
-        onClick={(evt) => {
-          console.log(evt)
-          dispatch({
-            type: "inc",
-          });
-        }}
-      >
-        点我试一试
-      </button>
+      <input onChange={() => {
+      }} />
       <div>
         {count & 1
           ? [...new Array(total).fill(null).map((_, index) => index)].map(

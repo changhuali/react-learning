@@ -2767,13 +2767,25 @@ function updateEffect(create, deps) {
 
 `React`会在`createRoot`时将所有在`allNativeEvents`列表中的事件往`container`上面注册一遍, 这些事件的`listener`是通过`createEventListenerWrapperWithPriority`创建的, 这个函数会根据事件名创建不同`listener`, 并且这些`listener`会在执行时通过调用`setCurrentUpdatePriority`改变全局变量`currentUpdatePriority`的值, 从而完成了上下文`优先级`的设置, 这就是为什么`React`可以根据事件类型调度不同优先级的任务。
 
-`listener`在执行时会通过`event对象`拿到对应的`DOM节点`, 然后通过`DOM节点`找到对应的`Fiber`(在创建DOM节点时会通过一个key), 
+`listener`在执行时会通过`event对象`拿到对应的`DOM节点`, 然后通过`DOM节点`找到对应的`Fiber`(在创建 DOM 节点时会通过一个 key),
 
 ## 可冒泡事件
 
 让事件冒泡到`container节点`, 触发之前注册的`listener`即可
 
 ## 不可冒泡事件
+
+将事件绑定到`DOM节点`自身, 还会为这个事件创建新的`listener`, 事件触发后执行这个`listener`即可
+
+下面这些事件虽然不会冒泡, 但可通过冒泡事件模拟, 所以不会采用上述事件绑定方式
+
+mouseenter: mouseover
+mouseleave: mouseout
+pointerenter: pointerover
+pointerleave: pointerout
+
+foucs: focusin
+blur: focusout
 
 # 调度
 
