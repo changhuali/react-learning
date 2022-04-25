@@ -1559,6 +1559,7 @@ function bubbleProperties(completedWork) {
 # commit 阶段
 
 `performConcurrentWorkOnRoot`执行完成后会执行`commitRoot`(先忽略一些特殊情况), 标志着`commit阶段`的开始。
+进入`beforeMutation阶段`, 在该阶段`React`将按先子节点后父节点的顺序执行`getSnapshotBeforeUpdate`生命周期钩子; 进入`mutation阶段`, 该阶段`React`将按先父节点后子节点的顺序对被删除的节点递归执行节点的`componentWillUnmount`生命周期钩子和`useEffect`的销毁函数, 并解绑`ref`, 然后从 dom 中移除, 再按照先子节点后父节点的顺序对节点执行插入和更新工作, 插入工作只需要插入 dom 即可, 更新工作需要更新 dom 的`properties`, 然后调用`useInsertionEffect`的销毁函数和回调函数, 最后调用`useLayoutEffect`的销毁函数; 进入`layout阶段`, 执行`useLayoutEffect`的回调函数,
 
 ## commitRoot
 
@@ -2788,6 +2789,52 @@ foucs: focusin
 blur: focusout
 
 # 调度
+
+## 初次渲染
+
+任务创建前会通过`requestEventTime`得到当前时间`eventTime`, 并通过`requestUpdateLane`得到当前任务的`lane`
+
+> 初次渲染时`requestUpdateLane`会返回`DefaultLane`
+
+执行`createUpdate`创建一个`Update`对象, 将`Update`对象入队到`current.updateQueue`, 然后执行`scheduleUpdateOnFiber`
+
+> `Update`对象保存了前面得到的`eventTime`和`lane`以及`element`
+
+`scheduleUpdateOnFiber`会先将`lane`合并到`current.lane`以及`current`的所有祖先节点的`childLanes`, 再将`lane`合并到`root.pendingLanes`, 将`eventTime`保存到`root.eventTimes`, 最后执行`ensureRootIsScheduled`
+
+> `eventTimes`是一个数组, 每个数组项存放的是不同`lane`所对应的`eventTime`, 位置是按`lane`中 1 所在的二进制位位置分配的, 比如`DefaultLane`值为`16`, 其二进制表示为`1000`, 那么其对应的索引就应该为`4`, 所以`DefaultLane`级别的任务的`eventTime`保存在`eventTimes`的第五位。
+
+`ensureRootIsScheduled`会遍历`pendingLanes`, 看看各个`lane`有没有设置超时时间, 如果没有, 则计算其超时时间, 然后将超时时间保存到`root.expirationTimes`, 如果有则继续查看`lane`是否超时, 如果超时, 将该`lane`合并到`root.expiredLanes`, 无论是否超时, 都会将`lane`从`pendingLanes`中移除
+
+> `expirationTimes`结构和存取逻辑同`eventTimes`, 判断一个`lane`是否超时只需要比较其在`expirationTimes`中的值和当前`eventTime`即可, 若`eventTime <= expirationTime`则判定超时; 当前任务的超时时间是通过`lane`计算的, 比如`lane <= 16`时`expirationTime = eventTime + 250`, `transition`级别的任务超时时间为`eventTime + 5000`, 其余级别的任务超时时间都为`-1`
+
+`ensureRootIsScheduled`通过`getNextLanes`获取`root.pendingLanes`中优先级最高的`lane`, 如果`lane === SyncLane`则执行`scheduleSyncCallback(performSyncWorkOnRoot.bind(null, root))`并立即发起一次微任务调度, 否则执行`Scheduler.unstable_scheduleCallback(schedulerPriorityLevel, performConcurrentWorkOnRoot.bind(null, root))`, `Scheduler.unstable_scheduleCallback`会创建一个`Task`对象, 并根据当前时间和任务的优先级计算一个`expirationTime`, 如果这个任务没被 delay, 则将`Task`对象入堆到`taskQueue`, 立即通过`MessageChanel`发起一次宏任务调度, 被 delay 的`Task`对象入堆到`timerQueue`, 如果`taskQueue`堆为空并且`newTask === peek(timerQueue)`, 说明当前任务为优先级最高的任务, 则会将`timerQueue`中到期的任务全部取出并入堆到`taskQueue`, 再对`taskQueue`执行一次调度。
+
+> `MessageChanel`的执行时机早于`setTimeout`, `taskQueue`是按`expirationTime`排序的小顶堆, `timerQueue`是按`startTime`排序的小顶堆
+
+-----------------------------同步代码执行完毕, 即将处理异步任务-----------------------------
+
+- 微任务
+
+`flushSyncCallbacks`会不断取出`syncQueue`中的任务, 调用`setCurrentUpdatePriority`设置上下文优先级, 执行该任务, `syncQueue`存储的是`performSyncWorkOnRoot`函数, 通过`performSyncWorkOnRoot`执行的任务在`render阶段`不可中断, `render阶段`完成后进入`commit阶段`; `commit阶段`创建一个优先级为`NormalPriority`的`Task`对象并将其加入到`taskQueue`, 该任务用于执行`flushPassiveEffects`; `commit阶段`完成后会再执行一次`ensureRootIsScheduled`, 最后再执行一次`flushSyncCallbacks`
+
+- 宏任务
+
+执行`performWorkUntilDeadline`, 获取当前时间`currentTime`并赋值给`startTime`, 调用`flushWork`, `flushWork`会执行`workLoop`, `workLoop`会不断从`taskQueue`取出任务执行, 取出的任务分两种, 不可中断任务和可中断任务
+
+可中断任务:
+
+也就是会执行`performConcurrentWorkOnRoot`, 如果当前任务已超时或者任务`lanes <= 16`, 则该任务的 render 阶段不可被中断, 否则任务是可中断的
+
+> 中断条件: 任务执行时间达到 5ms
+> 如果当前无剩余时间或任务总执行时间 >= 5ms, 但任务还未超时, 则中断任务
+> 若不满足上述条件, 则开始执行`renderRootConcurrent`, `renderRootConcurrent`会调用`workLoopConcurrent`处理`Fiber树`, `workLoopConcurrent`每处理完一个`Fiber`就会调用`shouldYield`判断任务执行时间是否超过 5ms, 若超过 5ms 则会中断, 此时退出状态会被设置为`RootInProgress`, 这时不会进入`commit阶段`, 而是会立即再执行一次`ensureRootIsScheduled`
+
+### 处理异步
+
+### 微任务队列
+
+### 宏任务队列
 
 # 热更新
 

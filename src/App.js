@@ -1,14 +1,24 @@
 import "./App.css";
-import { useEffect, useReducer, useRef, StrictMode } from "react";
+import {
+  useEffect,
+  useReducer,
+  useTransition,
+  StrictMode,
+  memo,
+  useState,
+} from "react";
 
 function GrandChild({ count }) {
-  // useEffect(() => {
-  //   console.log("GrandChild mount");
-  //   return () => {
-  //     console.log("GrandChild unmount");
-  //   };
-  // });
-  return <div>{count}</div>;
+  useEffect(() => {
+    return () => {};
+  });
+  return (
+    <div>
+      {new Array(1).fill(null).map((_, index) => (
+        <span key={index}>{count}</span>
+      ))}
+    </div>
+  );
 }
 
 function Child({ count }) {
@@ -20,10 +30,8 @@ function Child({ count }) {
   // });
   return <GrandChild count={count} />;
 }
-
-const total = 1000;
+const GC = memo(Child);
 function App() {
-  const ref = useRef();
   const [count, dispatch] = useReducer((state, action) => {
     switch (action.type) {
       case "inc":
@@ -33,24 +41,32 @@ function App() {
     }
   }, 1);
 
+  const [_, startTransition] = useTransition();
+  const [total, setTotal] = useState(2000);
+
   return (
     <StrictMode>
       {count}
-      <input onChange={() => {
-      }} />
+      <button
+        onClick={() => {
+          dispatch({
+            type: "inc",
+          });
+          startTransition(() => {
+            setTotal((total) => {
+              return total + 100;
+            });
+          });
+        }}
+      >
+        click me
+      </button>
       <div>
-        {count & 1
-          ? [...new Array(total).fill(null).map((_, index) => index)].map(
-              (item) => {
-                return <Child key={item} count={item} />;
-              }
-            )
-          : [
-              total - 1,
-              ...new Array(total - 1).fill(null).map((_, index) => index),
-            ].map((item) => {
-              return <Child key={item} count={item} />;
-            })}
+        {[...new Array(total).fill(null).map((_, index) => index)].map(
+          (item) => {
+            return <Child key={total - item} count={total - item} />;
+          }
+        )}
       </div>
     </StrictMode>
   );
