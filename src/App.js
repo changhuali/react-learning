@@ -42,21 +42,23 @@ function App() {
   }, 1);
 
   const [_, startTransition] = useTransition();
-  const [total, setTotal] = useState(2000);
+  const [total, setTotal] = useState(1000);
 
   return (
     <StrictMode>
       {count}
       <button
         onClick={() => {
-          dispatch({
-            type: "inc",
-          });
-          startTransition(() => {
-            setTotal((total) => {
-              return total + 100;
-            });
-          });
+          setTotal(100)
+          setTotal(101)
+          // dispatch({
+          //   type: "inc",
+          // });
+          // startTransition(() => {
+          //   setTotal((total) => {
+          //     return total + 100;
+          //   });
+          // });
         }}
       >
         click me

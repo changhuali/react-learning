@@ -2790,51 +2790,50 @@ blur: focusout
 
 # 调度
 
-## 初次渲染
+**作用**
 
-任务创建前会通过`requestEventTime`得到当前时间`eventTime`, 并通过`requestUpdateLane`得到当前任务的`lane`
+让低优先级的耗时任务可以中断, 从而让权给宿主环境执行更高优先级的任务, 防止低优先级的耗时任务阻塞高优先级任务, 导致用户交互无法及时得到反馈
 
-> 初次渲染时`requestUpdateLane`会返回`DefaultLane`
+**实现**
 
-执行`createUpdate`创建一个`Update`对象, 将`Update`对象入队到`current.updateQueue`, 然后执行`scheduleUpdateOnFiber`
+1. 通过微任务和宏任务实现中断
+2. 通过小顶堆实现不同优先级任务的调度
+3. 通过 lane 模型为不同的更新分配优先级
 
-> `Update`对象保存了前面得到的`eventTime`和`lane`以及`element`
+**lane 模型**
 
-`scheduleUpdateOnFiber`会先将`lane`合并到`current.lane`以及`current`的所有祖先节点的`childLanes`, 再将`lane`合并到`root.pendingLanes`, 将`eventTime`保存到`root.eventTimes`, 最后执行`ensureRootIsScheduled`
+- SyncLane
+  具有最高优先级, 会采用微任务的方式对其进行调度, 这类更新不可中断
+- InputContinuousHydrationLane InputContinuousLane DefaultHydrationLane DefaultLane
+  具有较高优先级, 会采用宏任务的方式对其进行调度, 这类更新不可中断
+- TransitionLanes
+  具有较低优先级, 会采用宏任务的方式对其进行调度, 这类任务可中断
+- RetryLanes
+  TODO:
+- IdleLane
+  TODO:
+- OffscreenLane
+  TODO:
 
-> `eventTimes`是一个数组, 每个数组项存放的是不同`lane`所对应的`eventTime`, 位置是按`lane`中 1 所在的二进制位位置分配的, 比如`DefaultLane`值为`16`, 其二进制表示为`1000`, 那么其对应的索引就应该为`4`, 所以`DefaultLane`级别的任务的`eventTime`保存在`eventTimes`的第五位。
+**批量更新**
 
-`ensureRootIsScheduled`会遍历`pendingLanes`, 看看各个`lane`有没有设置超时时间, 如果没有, 则计算其超时时间, 然后将超时时间保存到`root.expirationTimes`, 如果有则继续查看`lane`是否超时, 如果超时, 将该`lane`合并到`root.expiredLanes`, 无论是否超时, 都会将`lane`从`pendingLanes`中移除
+若同时触发了多个更新, 并且这些更新具有相同优先级, 则只有在第一次更新触发时才会生成任务, 当这个任务被调度时会一次性处理掉所有具有当前任务优先级的更新
 
-> `expirationTimes`结构和存取逻辑同`eventTimes`, 判断一个`lane`是否超时只需要比较其在`expirationTimes`中的值和当前`eventTime`即可, 若`eventTime <= expirationTime`则判定超时; 当前任务的超时时间是通过`lane`计算的, 比如`lane <= 16`时`expirationTime = eventTime + 250`, `transition`级别的任务超时时间为`eventTime + 5000`, 其余级别的任务超时时间都为`-1`
+更新和任务并不是一一对应的, 一个任务可能会处理多个更新
+而且任务和调度也不是一一对应的, 一次调度可能会执行多个任务
 
-`ensureRootIsScheduled`通过`getNextLanes`获取`root.pendingLanes`中优先级最高的`lane`, 如果`lane === SyncLane`则执行`scheduleSyncCallback(performSyncWorkOnRoot.bind(null, root))`并立即发起一次微任务调度, 否则执行`Scheduler.unstable_scheduleCallback(schedulerPriorityLevel, performConcurrentWorkOnRoot.bind(null, root))`, `Scheduler.unstable_scheduleCallback`会创建一个`Task`对象, 并根据当前时间和任务的优先级计算一个`expirationTime`, 如果这个任务没被 delay, 则将`Task`对象入堆到`taskQueue`, 立即通过`MessageChanel`发起一次宏任务调度, 被 delay 的`Task`对象入堆到`timerQueue`, 如果`taskQueue`堆为空并且`newTask === peek(timerQueue)`, 说明当前任务为优先级最高的任务, 则会将`timerQueue`中到期的任务全部取出并入堆到`taskQueue`, 再对`taskQueue`执行一次调度。
+**中断**
 
-> `MessageChanel`的执行时机早于`setTimeout`, `taskQueue`是按`expirationTime`排序的小顶堆, `timerQueue`是按`startTime`排序的小顶堆
+触发条件:
 
------------------------------同步代码执行完毕, 即将处理异步任务-----------------------------
+1. 在处理一个`Fiber`之前, 会先判断当前调度的总耗时是否低于 5ms, 若满足条件, 则处理该`Fiber`, 否则发生中断
+2. 在执行一个任务之前, 会先判断当前调度的总耗时是否低于 5ms 或任务是否超时, 若满足任一条件, 则执行当前任务, 否则发生中断
 
-- 微任务
+如何恢复:
 
-`flushSyncCallbacks`会不断取出`syncQueue`中的任务, 调用`setCurrentUpdatePriority`设置上下文优先级, 执行该任务, `syncQueue`存储的是`performSyncWorkOnRoot`函数, 通过`performSyncWorkOnRoot`执行的任务在`render阶段`不可中断, `render阶段`完成后进入`commit阶段`; `commit阶段`创建一个优先级为`NormalPriority`的`Task`对象并将其加入到`taskQueue`, 该任务用于执行`flushPassiveEffects`; `commit阶段`完成后会再执行一次`ensureRootIsScheduled`, 最后再执行一次`flushSyncCallbacks`
+1. 若中断发生在`workLoopConcurrent`, 会立即产生一个新的任务, 将该任务入堆, 当下个任务(不一定是刚新建的那个)在被执行时`workInProgressRoot !== root || workInProgressRootRenderLanes !== lanes`的结果如果为`false`, 说明此任务是用来恢复之前的中断的, 应该恢复工作流, 此时不会调用`prepareFreshStack`重置`workInProgress`, 所以`workLoopConcurrent`会继续从上次中断的 fiber 开始执行, 因此之前完成的工作不会被丢失, 如果为`true`, 说明当前任务不是用来恢复中断的, 则会调用`prepareFreshStack`将`workInProgress`和一些全局变量重置, 之前执行的工作会被丢失。
 
-- 宏任务
-
-执行`performWorkUntilDeadline`, 获取当前时间`currentTime`并赋值给`startTime`, 调用`flushWork`, `flushWork`会执行`workLoop`, `workLoop`会不断从`taskQueue`取出任务执行, 取出的任务分两种, 不可中断任务和可中断任务
-
-可中断任务:
-
-也就是会执行`performConcurrentWorkOnRoot`, 如果当前任务已超时或者任务`lanes <= 16`, 则该任务的 render 阶段不可被中断, 否则任务是可中断的
-
-> 中断条件: 任务执行时间达到 5ms
-> 如果当前无剩余时间或任务总执行时间 >= 5ms, 但任务还未超时, 则中断任务
-> 若不满足上述条件, 则开始执行`renderRootConcurrent`, `renderRootConcurrent`会调用`workLoopConcurrent`处理`Fiber树`, `workLoopConcurrent`每处理完一个`Fiber`就会调用`shouldYield`判断任务执行时间是否超过 5ms, 若超过 5ms 则会中断, 此时退出状态会被设置为`RootInProgress`, 这时不会进入`commit阶段`, 而是会立即再执行一次`ensureRootIsScheduled`
-
-### 处理异步
-
-### 微任务队列
-
-### 宏任务队列
+2. 若中断发生在 scheduler 中的 workLoop, 会立即发起一次宏任务调度用于恢复到之前的工作流, 之前完成的工作不会丢失。
 
 # 热更新
 
