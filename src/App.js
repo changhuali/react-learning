@@ -49,16 +49,13 @@ function App() {
       {count}
       <button
         onClick={() => {
-          setTotal(100)
-          setTotal(101)
-          // dispatch({
-          //   type: "inc",
-          // });
-          // startTransition(() => {
-          //   setTotal((total) => {
-          //     return total + 100;
-          //   });
-          // });
+          startTransition(() => {
+            setTimeout(() => {
+              setTotal((total) => {
+                return total + 100;
+              });
+            })
+          });
         }}
       >
         click me
