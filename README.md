@@ -164,6 +164,34 @@ function ensureRootIsScheduled(root, currentTime) {
     root === workInProgressRoot ? workInProgressRootRenderLanes : NoLanes
   );
   var newCallbackPriority = getHighestPriorityLane(nextLanes);
+
+  // 批处理判断, 当前更新和上次更新具有相同优先级, 则这两次更新只会生成一个调度任务
+  if (
+    existingCallbackPriority === newCallbackPriority && // Special case related to `act`. If the currently scheduled task is a
+    // Scheduler task, rather than an `act` task, cancel it and re-scheduled
+    // on the `act` queue.
+    !(
+      ReactCurrentActQueue$1.current !== null &&
+      existingCallbackNode !== fakeActCallbackNode
+    )
+  ) {
+    {
+      // If we're going to re-use an existing task, it needs to exist.
+      // Assume that discrete update microtasks are non-cancellable and null.
+      // TODO: Temporary until we confirm this warning is not fired.
+      if (
+        existingCallbackNode == null &&
+        existingCallbackPriority !== SyncLane
+      ) {
+        error(
+          "Expected scheduled callback to exist. This error is likely caused by a bug in React. Please file an issue."
+        );
+      }
+    } // The priority hasn't changed. We can reuse the existing task. Exit.
+
+    return;
+  }
+
   // 优先级为SyncLane，进入微任务队列（基于queueMicrotask或Promise）
   if (newCallbackPriority === SyncLane) {
     // 将performSyncWorkOnRoot.bind(null, root)回调函数加入到全局syncQueue队列
@@ -1952,6 +1980,11 @@ var HooksDispatcherOnMountInDEV = {
     checkDepsAreArrayDev(deps);
     return mountEffect(create, deps);
   },
+  useTransition: function () {
+    currentHookNameInDev = "useTransition";
+    mountHookTypesDev();
+    return mountTransition();
+  },
 };
 ```
 
@@ -2249,6 +2282,67 @@ function readContext(context) {
 }
 ```
 
+### useTransition mountTransition
+
+```ts
+function mountTransition() {
+  // 内部调用了useState
+  var _mountState2 = mountState(false),
+    isPending = _mountState2[0],
+    setPending = _mountState2[1];
+
+  var start = startTransition.bind(null, setPending);
+  var hook = mountWorkInProgressHook();
+  hook.memoizedState = start;
+  return [isPending, start];
+}
+// startTransition内部调用了两次setState, 所以会额外造成两次rerender
+function startTransition(setPending, callback, options) {
+  var previousPriority = getCurrentUpdatePriority();
+  // 将当前上下文
+  setCurrentUpdatePriority(
+    higherEventPriority(previousPriority, ContinuousEventPriority)
+  );
+  // 注意: 此次更新的优先级为higherEventPriority(previousPriority, ContinuousEventPriority)
+  // 也就是说这次更新是不可中断的
+  setPending(true);
+  var prevTransition = ReactCurrentBatchConfig$2.transition;
+  // 标记当前更新处于transition
+  ReactCurrentBatchConfig$2.transition = {};
+  var currentTransition = ReactCurrentBatchConfig$2.transition;
+
+  {
+    ReactCurrentBatchConfig$2.transition._updatedFibers = new Set();
+  }
+
+  try {
+    // 注意: 这次更新的优先级为TransitionXX
+    setPending(false);
+    // 可以看出startTransition的回调是直接执行的
+    callback();
+  } finally {
+    setCurrentUpdatePriority(previousPriority);
+    ReactCurrentBatchConfig$2.transition = prevTransition;
+
+    {
+      if (prevTransition === null && currentTransition._updatedFibers) {
+        var updatedFibersCount = currentTransition._updatedFibers.size;
+
+        if (updatedFibersCount > 10) {
+          warn(
+            "Detected a large number of updates inside startTransition. " +
+              "If this is due to a subscription please re-write it to use React provided hooks. " +
+              "Otherwise concurrent mode guarantees are off the table."
+          );
+        }
+
+        currentTransition._updatedFibers.clear();
+      }
+    }
+  }
+}
+```
+
 ### useImperativeHandle mountImperativeHandle
 
 ```ts
@@ -2476,6 +2570,11 @@ var HooksDispatcherOnUpdateInDEV = {
     currentHookNameInDev = "useEffect";
     updateHookTypesDev();
     return updateEffect(create, deps);
+  },
+  useTransition: function () {
+    currentHookNameInDev = "useTransition";
+    updateHookTypesDev();
+    return updateTransition();
   },
 };
 ```
@@ -2761,6 +2860,20 @@ function updateLayoutEffect(create, deps) {
 // 同updateLayoutEffect, 只是fiber标记换成了Passive, hook标记换成了Passive$1
 function updateEffect(create, deps) {
   return updateEffectImpl(Passive, Passive$1, create, deps);
+}
+```
+
+### useTransition updateTransition
+
+```ts
+// 可以发现, isPending会更新, startTransition不会发生变化
+function updateTransition() {
+  var _updateState2 = updateState(),
+    isPending = _updateState2[0];
+
+  var hook = updateWorkInProgressHook();
+  var start = hook.memoizedState;
+  return [isPending, start];
 }
 ```
 

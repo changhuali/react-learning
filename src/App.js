@@ -50,11 +50,9 @@ function App() {
       <button
         onClick={() => {
           startTransition(() => {
-            setTimeout(() => {
-              setTotal((total) => {
-                return total + 100;
-              });
-            })
+            setTotal((total) => {
+              return total + 100;
+            });
           });
         }}
       >
