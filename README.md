@@ -2910,7 +2910,7 @@ blur: focusout
 **实现**
 
 1. 通过宏任务实现中断
-   微任务优先级: process.nextTick > Promise > Mutation.Observer
+   微任务优先级: process.nextTick > Promise == Mutation.Observer
    宏任务优先级: MessageChanel/setImmediate > setTimeout
    浏览器事件循环: 执行栈执行完毕 --> 清空微任务队列 --> 检查渲染->GUI 渲染 --> 取出一个宏任务加入到执行栈
 2. 通过小顶堆实现不同优先级任务的调度

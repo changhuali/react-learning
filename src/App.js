@@ -1,71 +1,44 @@
-import "./App.css";
-import {
-  useEffect,
-  useReducer,
-  useTransition,
-  StrictMode,
-  memo,
-  useState,
-} from "react";
+import { memo, useState } from "react";
 
-function GrandChild({ count }) {
-  useEffect(() => {
-    return () => {};
-  });
+function Child({ index }) {
+  const [currentNum, setCurrentNum] = useState(0);
   return (
     <div>
-      {new Array(1).fill(null).map((_, index) => (
-        <span key={index}>{count}</span>
-      ))}
-    </div>
-  );
-}
-
-function Child({ count }) {
-  // useEffect(() => {
-  //   console.log("Child mount");
-  //   return () => {
-  //     console.log("Child unmount");
-  //   };
-  // });
-  return <GrandChild count={count} />;
-}
-const GC = memo(Child);
-function App() {
-  const [count, dispatch] = useReducer((state, action) => {
-    switch (action.type) {
-      case "inc":
-        return ++state;
-      default:
-        throw new Error();
-    }
-  }, 1);
-
-  const [_, startTransition] = useTransition();
-  const [total, setTotal] = useState(1000);
-
-  return (
-    <StrictMode>
-      {count}
+      <div>{currentNum + index}</div>
       <button
         onClick={() => {
-          startTransition(() => {
-            setTotal((total) => {
-              return total + 100;
-            });
-          });
+          setCurrentNum((cur) => ++cur);
         }}
       >
         click me
       </button>
-      <div>
-        {[...new Array(total).fill(null).map((_, index) => index)].map(
-          (item) => {
-            return <Child key={total - item} count={total - item} />;
-          }
-        )}
-      </div>
-    </StrictMode>
+    </div>
+  );
+}
+const ChildWithMemo = memo(Child);
+
+function App() {
+  return (
+    <div>
+
+      {[...new Array(999).fill(null)].map((_, index) => {
+        return <ChildWithMemo key={index} index={index} />;
+      })}
+
+
+      {/* {[...new Array(333).fill(null)].map((_, index) => {
+        return <ChildWithMemo key={index} index={index} />;
+      })}
+
+      {[...new Array(333).fill(null)].map((_, index) => {
+        return <ChildWithMemo key={index} index={index} />;
+      })}
+
+      {[...new Array(333).fill(null)].map((_, index) => {
+        return <ChildWithMemo key={index} index={index} />;
+      })} */}
+
+    </div>
   );
 }
 
