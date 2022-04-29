@@ -1832,7 +1832,7 @@ function commitRootImpl(root, recoverableErrors, renderPriorityLevel) {
 
   // Always call this before exiting `commitRoot`, to ensure that any
   // additional work on this root is scheduled.
-  // TODO:什么时候会有待处理任务
+  // 此次render阶段被跳过的更新会在此执行
   ensureRootIsScheduled(root, now());
   if (recoverableErrors !== null) {
     // There were errors during this render, but recovered from them without
@@ -1861,7 +1861,7 @@ function commitRootImpl(root, recoverableErrors, renderPriorityLevel) {
   // currently schedule the callback in multiple places, will wait until those
   // are consolidated.
 
-  // so, 通过离散事件触发的更新会同步处理其useEffect？
+  // 通过离散事件触发的更新会同步处理其useEffect
   if (
     includesSomeLane(pendingPassiveEffectsLanes, SyncLane) &&
     root.tag !== LegacyRoot
@@ -1871,7 +1871,7 @@ function commitRootImpl(root, recoverableErrors, renderPriorityLevel) {
 
   // Read this again, since a passive effect might have updated it
   remainingLanes = root.pendingLanes;
-
+  
   if (includesSomeLane(remainingLanes, SyncLane)) {
     {
       markNestedUpdateScheduled();
@@ -2910,7 +2910,7 @@ blur: focusout
 **实现**
 
 1. 通过宏任务实现中断
-   微任务优先级: process.nextTick > Promise == Mutation.Observer
+   微任务优先级: process.nextTick > Promise == MutationObserver
    宏任务优先级: MessageChanel/setImmediate > setTimeout
    浏览器事件循环: 执行栈执行完毕 --> 清空微任务队列 --> 检查渲染->GUI 渲染 --> 取出一个宏任务加入到执行栈
 2. 通过小顶堆实现不同优先级任务的调度
