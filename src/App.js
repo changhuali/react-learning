@@ -1,44 +1,60 @@
-import { memo, useState } from "react";
+import { createContext, memo, useContext, useState } from "react";
+import "./App.css";
 
-function Child({ index }) {
-  const [currentNum, setCurrentNum] = useState(0);
+const Context = createContext();
+const useLocalContext = () => {
+  return useContext(Context);
+};
+
+function C() {
+  const local = useLocalContext();
+  console.log('C render');
+  return <div>C{local}</div>;
+}
+
+const MC = memo(C)
+
+function B() {
+  console.log("B render");
   return (
     <div>
-      <div>{currentNum + index}</div>
+      B
+      <MC />
+    </div>
+  );
+}
+
+const MB = memo(B);
+
+function A() {
+  console.log("A render");
+  return (
+    <div>
+      A
+      <MB />
+    </div>
+  );
+}
+
+const MA = memo(A);
+
+function App() {
+  const [a, setA] = useState(111);
+  console.log("App render");
+
+  return (
+    <>
       <button
         onClick={() => {
-          setCurrentNum((cur) => ++cur);
+          setA((a) => ++a);
         }}
       >
         click me
       </button>
-    </div>
-  );
-}
-const ChildWithMemo = memo(Child);
-
-function App() {
-  return (
-    <div>
-
-      {[...new Array(999).fill(null)].map((_, index) => {
-        return <ChildWithMemo key={index} index={index} />;
-      })}
-
-
-      {/* {[...new Array(333).fill(null)].map((_, index) => {
-        return <ChildWithMemo key={index} index={index} />;
-      })}
-
-      {[...new Array(333).fill(null)].map((_, index) => {
-        return <ChildWithMemo key={index} index={index} />;
-      })}
-
-      {[...new Array(333).fill(null)].map((_, index) => {
-        return <ChildWithMemo key={index} index={index} />;
-      })} */}
-
-    </div>
+      <Context.Provider value={a}>
+        <MA />
+      </Context.Provider>
+    </>
   );
 }
 

@@ -280,6 +280,9 @@ function beginWork(current, workInProgress, renderLanes) {
     var oldProps = current.memoizedProps;
     var newProps = workInProgress.pendingProps;
 
+    // 假如有组件树rootFiber->A->B->C, 此时若C发生更新, 两棵树的rootFiber的props === null, 下面条件会为true, rootFiber会被bailout
+    // 那么A节点会被完全复用, 当处理A节点时, 由于A节点被完全复用, 此处条件依旧为true, 所以B节点也会被完全复用, 在处理B节点时, 由于B节点
+    // 被完全复用, 所以C节点也会被完全复用, 但是hasScheduledUpdateOrContext条件会为false, 所以C节点会rerender
     if (
       oldProps !== newProps ||
       hasContextChanged() || // Force a re-render if the implementation changed due to hot reload:
@@ -287,9 +290,6 @@ function beginWork(current, workInProgress, renderLanes) {
     ) {
       didReceiveUpdate = true;
     } else {
-      // 优化点：props相等且type相等则直接复用`Fiber`
-      // 等价 var hasScheduledUpdateOrContext = includesSomeLane(current.lanes, renderLanes)
-      // TODO:
       var hasScheduledUpdateOrContext = checkScheduledUpdateOrContext(
         current,
         renderLanes
@@ -376,6 +376,20 @@ function beginWork(current, workInProgress, renderLanes) {
     // 文本
     case HostText:
       return updateHostText$1(current, workInProgress);
+    // createContext返回的是一个$$typeof为REACT_CONTEXT_TYPE的Context对象
+    // Context对象具有Provider属性、Consumer属性、_currentValue属性, _currentValue属性用于存储数据
+    // Provider属性指向一个$$typeof为REACT_PROVIDER_TYPE的Provider对象, Provider对象具有_context属性, 指向Context对象
+    // Provider用作组件时只包含两个props, children和value, 内部具有优化机制, 当children和value都相等时, 该节点会被bailout
+    // Consumer属性指向一个$$typeof为REACT_CONTEXT_TYPE的Consumer对象, Consumer对象具有_context属性, 指向Context对象
+    // Consumer用作组件时其children必须是一个函数, 此函数会在reconcile阶段被调用, 其实参为Context对象的_currentValue
+    // 可见当Consumer和Provider被跨层级调用时, 由于都可以通过_context属性访问Context对象, 所以可以共享数据
+    // 那么当上层数据更新后, Consumer如何响应更新呢?
+    // Consumer在被reconcile时, 会将context信息保存在其fiber的dependencies.firstContext链表上
+    // Provider在被reconcile时, 如果不被bailout, 则会采用DFS的方式递归遍历所有子节点, 查看节点的dependencies.firstContext
+    // 链表上的某个节点的context是否和该Provider的context相同, 说有, 则将该节点的lanes合并上当前的renderLanes, 并将该节点的
+    // 祖先节点的childLanes也合并上renderLanes
+    case ContextProvider:
+      return updateContextProvider(current, workInProgress, renderLanes);
     // ...
   }
 }
